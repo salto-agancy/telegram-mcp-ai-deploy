@@ -37,6 +37,7 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 - ACL is fail-closed, read-only and limited to Saved Messages by default.
 - Raw MTProto and telemetry are disabled by default.
 - Application containers publish no VPS ports; CI and pre-push hooks scan full Git history.
+- Locked runtime dependencies include patched releases for all GitHub security alerts known at release time.
 
 [Unreleased]: https://github.com/salto-agancy/telegram-mcp-ai-deploy/compare/v0.34.0...HEAD
 [0.34.0]: https://github.com/salto-agancy/telegram-mcp-ai-deploy/releases/tag/v0.34.0
