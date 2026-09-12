@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Telegram MCP Setup</title>
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <style>
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+            margin: 0;
+            padding: 0;
+            background: #0b1020;
+            color: #e6e9ef;
+        }
+
+        .container {
+            max-width: 640px;
+            margin: 40px auto;
+            padding: 24px;
+            background: #121a2e;
+            border-radius: 12px;
+            box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
+        }
+
+        h1,
+        h2,
+        h3 {
+            margin: 0 0 12px;
+            line-height: 1.25;
+        }
+
+        p {
+            margin: 0 0 12px;
+            line-height: 1.45;
+        }
+
+        label {
+            display: block;
+            margin: 0;
+            font-weight: 600;
+        }
+
+        input[type="text"],
+        input[type="tel"],
+        input[type="password"] {
+            width: 100%;
+            max-width: 100%;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid #2a3556;
+            background: #0f1528;
+            color: #e6e9ef;
+            font-size: 1.1rem;
+        }
+
+        input[type="text"]::placeholder,
+        input[type="tel"]::placeholder,
+        input[type="password"]::placeholder {
+            color: #6b7280;
+            /* dark grey */
+        }
+
+        button {
+            margin-top: 0;
+            padding: 10px 16px;
+            border: 1px solid #2a3556;
+            background: #1a2442;
+            color: #e6e9ef;
+            border-radius: 8px;
+            cursor: pointer;
+            max-width: 100%;
+            font-size: 1rem;
+        }
+
+        button:hover {
+            background: #22305a;
+        }
+
+        .muted {
+            color: #9aa3b2;
+            font-size: 0.85rem;
+            margin: 0 0 12px;
+        }
+
+        .error {
+            color: #ff6b6b;
+            margin: 0 0 12px;
+        }
+
+        .warning {
+            color: #ff6b6b;
+            font-size: 0.9rem;
+            margin: 0 0 12px;
+            line-height: 1.45;
+        }
+
+        .card {
+            padding: 16px;
+            border: 1px solid #2a3556;
+            border-radius: 8px;
+            background: #0f1528;
+        }
+
+        form {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            margin-top: 12px;
+        }
+
+        /* Avoid flex gap + paragraph .muted margin stacking inside forms */
+        form>p,
+        form>div.muted {
+            margin: 0;
+        }
+
+        form button {
+            align-self: flex-start;
+        }
+
+        /* Extra space between fields and primary submit (on top of flex gap) */
+        form>button[type="submit"] {
+            margin-top: 12px;
+        }
+
+        /* Primary actions below body copy / cards */
+        .setup-actions {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 12px;
+            margin-top: 20px;
+        }
+
+        .mt-block {
+            margin: 1rem 0;
+        }
+
+        .mt-lg {
+            margin-top: 2rem;
+        }
+
+        .mb-sm {
+            margin-bottom: 12px;
+        }
+
+        .option-block {
+            margin-top: 1.5rem;
+        }
+
+        .pre-wrap {
+            white-space: pre-wrap;
+        }
+
+        .form-inline {
+            display: inline-block;
+            margin-top: 0;
+        }
+
+        code.token-display {
+            word-break: break-all;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        {% block content %}{% endblock %}
+    </div>
+</body>
+
+</html>

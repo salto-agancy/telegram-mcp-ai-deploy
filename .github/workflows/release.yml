@@ -1,0 +1,50 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]*.[0-9]*.[0-9]*"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v10.1.0
+        with:
+          version: "0.10.6"
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Verify semantic tag matches package version
+        run: |
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$(uv version --short)" == "${GITHUB_REF_NAME#v}" ]]
+      - run: make lint
+      - run: make test
+      - run: make test-security
+      - run: make test-installer
+      - run: ./scripts/secret-scan.sh --worktree --history
+      - run: docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.30.1 git --no-banner --redact /repo
+      - run: cp .env.example .env && cp .runtime.env.example .runtime.env
+      - run: mkdir -p secrets && touch secrets/backend_bearer secrets/oauth_client_id secrets/oauth_client_secret secrets/cloudflared_token secrets/acl.yaml
+      - run: docker compose config --quiet
+      - run: docker build --check .
+
+  publish:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes

@@ -1,0 +1,1037 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
+from urllib.parse import quote
+
+from telethon.errors import FloodWaitError, RPCError
+from telethon.tl.functions.messages import TranscribeAudioRequest
+
+from src.client.connection import get_connected_client, get_request_token
+from src.config.server_config import cfg
+from src.server_components.attachment_tickets import mint_attachment_ticket
+from src.utils.entity import (
+    _extract_forward_info,
+    _forward_peer_id_and_type_label,
+    build_entity_dict,
+    get_entity_by_id,
+)
+
+logger = logging.getLogger(__name__)
+
+
+def _service_action_placeholder_text(message) -> str | None:
+    """Short English label for Telegram service messages (Message.action set)."""
+    action = getattr(message, "action", None)
+    if action is None:
+        return None
+    cls_name = action.__class__.__name__
+    prefix = "MessageAction"
+    if cls_name.startswith(prefix) and len(cls_name) > len(prefix):
+        tail = cls_name[len(prefix) :]
+        return f"[Service: {tail}]"
+    return f"[Service: {cls_name}]"
+
+
+_KNOWN_MEDIA_CLASSES = frozenset(
+    {
+        "MessageMediaPhoto",
+        "MessageMediaDocument",
+        "MessageMediaAudio",
+        "MessageMediaVoice",
+        "MessageMediaVideo",
+        "MessageMediaWebPage",
+        "MessageMediaGeo",
+        "MessageMediaContact",
+        "MessageMediaPoll",
+        "MessageMediaDice",
+        "MessageMediaVenue",
+        "MessageMediaGame",
+        "MessageMediaInvoice",
+        "MessageMediaToDo",
+        "MessageMediaUnsupported",
+    }
+)
+
+
+def _document_voice_and_round_note_flags(document) -> tuple[bool, bool]:
+    """Return (is_voice_message, is_round_video) from document attributes."""
+    is_voice = False
+    is_round_video = False
+    for attr in getattr(document, "attributes", []) or []:
+        ac = attr.__class__.__name__
+        if ac == "DocumentAttributeAudio" and getattr(attr, "voice", False):
+            is_voice = True
+        elif ac == "DocumentAttributeVideo" and getattr(attr, "round_message", False):
+            is_round_video = True
+    return is_voice, is_round_video
+
+
+def _message_supports_streaming_attachment(message) -> bool:
+    """Whether attachment HTTP streaming is supported for this message (documents, photos)."""
+    media = getattr(message, "media", None)
+    if not media:
+        return False
+    media_cls = media.__class__.__name__
+    if media_cls == "MessageMediaPhoto":
+        return True
+    if media_cls == "MessageMediaDocument":
+        document = getattr(media, "document", None)
+        if not document:
+            return False
+        is_voice, is_round_video = _document_voice_and_round_note_flags(document)
+        return not (is_voice or is_round_video)
+    return False
+
+
+async def _maybe_set_attachment_download_url(
+    media_dict: dict[str, Any],
+    message,
+    chat_id: int | None,
+) -> None:
+    """Set media['attachment_download_url'] when HTTP mode and DOMAIN resolves to a public origin."""
+    if chat_id is None:
+        return
+    if isinstance(chat_id, str) and not chat_id.strip():
+        return
+    config = cfg()
+    if config.transport != "http" or not config.public_base_url_normalized:
+        return
+    if not _message_supports_streaming_attachment(message):
+        return
+
+    session_token = get_request_token()
+    if session_token is None:
+        session_token = config.session_name
+
+    filename = media_dict.get("filename")
+    mime_type = media_dict.get("mime_type")
+    try:
+        cid = int(chat_id)
+        mid = int(message.id)
+    except (TypeError, ValueError) as _conv_err:
+        logger.warning(
+            "Skipping attachment URL: invalid chat_id=%r or message.id=%r (%s)",
+            chat_id,
+            getattr(message, "id", None),
+            _conv_err,
+        )
+        return
+    tid = await mint_attachment_ticket(
+        session_token,
+        cid,
+        mid,
+        filename=filename if isinstance(filename, str) else None,
+        mime_type=mime_type if isinstance(mime_type, str) else None,
+    )
+    base = config.public_base_url_normalized
+    url = f"{base}/v1/attachments/{tid}"
+    if tid_filename := media_dict.get("filename"):
+        url = f"{url}/{quote(tid_filename, safe='')}"
+    else:
+        msg_id = getattr(message, "id", "unknown")
+        url = f"{url}/photo_{msg_id}.jpg"
+    media_dict["attachment_download_url"] = url
+
+
+def _has_any_media(message) -> bool:
+    """Check if message contains any type of media content."""
+    if not hasattr(message, "media") or message.media is None:
+        return False
+    return message.media.__class__.__name__ in _KNOWN_MEDIA_CLASSES
+
+
+def message_has_displayable_content(message: Any) -> bool:
+    """True when a Telethon message has text, media, or a service placeholder."""
+    if not message:
+        return False
+    if (
+        getattr(message, "text", None)
+        or getattr(message, "message", None)
+        or getattr(message, "caption", None)
+    ):
+        return True
+    if _has_any_media(message):
+        return True
+    return _service_action_placeholder_text(message) is not None
+
+
+def _decode_callback_data(button) -> str:
+    data = getattr(button, "data", None)
+    return data.decode("utf-8", errors="replace") if data else ""
+
+
+def _inline_button_extra_url(button) -> dict[str, Any]:
+    return {"type": "url", "url": getattr(button, "url", "")}
+
+
+def _inline_button_extra_callback(button) -> dict[str, Any]:
+    return {"type": "callback_data", "data": _decode_callback_data(button)}
+
+
+def _inline_button_extra_switch_inline(button) -> dict[str, Any]:
+    return {"type": "switch_inline_query", "query": getattr(button, "query", "")}
+
+
+def _inline_button_extra_switch_inline_same(button) -> dict[str, Any]:
+    return {
+        "type": "switch_inline_query_current_chat",
+        "query": getattr(button, "query", ""),
+    }
+
+
+def _inline_button_extra_game(_button) -> dict[str, Any]:
+    return {"type": "callback_game"}
+
+
+def _inline_button_extra_buy(_button) -> dict[str, Any]:
+    return {"type": "pay"}
+
+
+def _inline_button_extra_user_profile(button) -> dict[str, Any]:
+    return {"type": "user_profile", "user_id": getattr(button, "user_id", None)}
+
+
+_INLINE_BUTTON_SERIALIZERS: dict[str, Callable[[Any], dict[str, Any]]] = {
+    "KeyboardButtonUrl": _inline_button_extra_url,
+    "KeyboardButtonCallback": _inline_button_extra_callback,
+    "KeyboardButtonSwitchInline": _inline_button_extra_switch_inline,
+    "KeyboardButtonSwitchInlineSame": _inline_button_extra_switch_inline_same,
+    "KeyboardButtonGame": _inline_button_extra_game,
+    "KeyboardButtonBuy": _inline_button_extra_buy,
+    "KeyboardButtonUserProfile": _inline_button_extra_user_profile,
+}
+
+
+def _extract_reply_markup(message) -> dict[str, Any] | None:
+    """Extract and serialize reply markup from a message if present."""
+    reply_markup = getattr(message, "reply_markup", None)
+    if not reply_markup:
+        return None
+
+    markup_class = reply_markup.__class__.__name__
+
+    if markup_class == "ReplyKeyboardMarkup":
+        rows = []
+        if hasattr(reply_markup, "rows"):
+            for row in reply_markup.rows:
+                row_buttons = []
+                if hasattr(row, "buttons"):
+                    row_buttons.extend(
+                        {"text": getattr(button, "text", "")} for button in row.buttons
+                    )
+                rows.append(row_buttons)
+
+        return {
+            "type": "keyboard",
+            "rows": rows,
+            "resize": getattr(reply_markup, "resize", None),
+            "single_use": getattr(reply_markup, "single_use", None),
+            "selective": getattr(reply_markup, "selective", None),
+            "persistent": getattr(reply_markup, "persistent", None),
+            "placeholder": getattr(reply_markup, "placeholder", None),
+        }
+
+    if markup_class == "ReplyInlineMarkup":
+        rows = []
+        if hasattr(reply_markup, "rows"):
+            for row in reply_markup.rows:
+                row_buttons = []
+                if hasattr(row, "buttons"):
+                    for button in row.buttons:
+                        text = getattr(button, "text", "")
+                        btn_cls = button.__class__.__name__
+                        serializer = _INLINE_BUTTON_SERIALIZERS.get(btn_cls)
+                        extra = (
+                            serializer(button) if serializer else {"type": "unknown"}
+                        )
+                        row_buttons.append({"text": text, **extra})
+                rows.append(row_buttons)
+
+        return {
+            "type": "inline",
+            "rows": rows,
+        }
+
+    if markup_class == "ReplyKeyboardForceReply":
+        return {
+            "type": "force_reply",
+            "selective": getattr(reply_markup, "selective", None),
+            "placeholder": getattr(reply_markup, "placeholder", None),
+        }
+
+    if markup_class == "ReplyKeyboardHide":
+        return {
+            "type": "hide",
+            "selective": getattr(reply_markup, "selective", None),
+        }
+
+    return {
+        "type": "unknown",
+        "class": markup_class,
+    }
+
+
+def build_send_edit_result(message, chat, status: str) -> dict[str, Any]:
+    """Build a consistent result dictionary for send/edit operations."""
+    chat_dict = build_entity_dict(chat)
+    sender_dict = build_entity_dict(getattr(message, "sender", None))
+
+    result = {
+        "message_id": message.id,
+        "date": message.date.isoformat(),
+        "chat": chat_dict,
+        "text": message.text,
+        "status": status,
+        "sender": sender_dict,
+    }
+
+    if status == "edited" and hasattr(message, "edit_date") and message.edit_date:
+        result["edit_date"] = message.edit_date.isoformat()
+
+    reply_markup = _extract_reply_markup(message)
+    if reply_markup is not None:
+        result["reply_markup"] = reply_markup
+
+    return result
+
+
+async def get_sender_info(client, message) -> dict[str, Any] | None:
+    if hasattr(message, "sender_id") and message.sender_id:
+        try:
+            sender = await get_entity_by_id(message.sender_id)
+            if sender:
+                return build_entity_dict(sender)
+            return {"id": message.sender_id, "error": "Sender not found"}
+        except Exception:
+            return {"id": message.sender_id, "error": "Failed to retrieve sender"}
+    return None
+
+
+def _document_duration_and_filename(document) -> tuple[int | None, str | None]:
+    """Duration and filename from document.attributes (audio/video and filename attrs)."""
+    duration = None
+    filename = None
+    for attr in getattr(document, "attributes", []) or []:
+        ac = attr.__class__.__name__
+        if ac in ("DocumentAttributeAudio", "DocumentAttributeVideo"):
+            if hasattr(attr, "duration"):
+                duration = attr.duration
+        elif hasattr(attr, "file_name") and attr.file_name:
+            filename = attr.file_name
+    return duration, filename
+
+
+def _first_document_attribute_duration(document) -> int | None:
+    return next(
+        (
+            attr.duration
+            for attr in getattr(document, "attributes", []) or []
+            if hasattr(attr, "duration") and attr.duration is not None
+        ),
+        None,
+    )
+
+
+def _apply_document_mime_and_size(placeholder: dict[str, Any], document) -> None:
+    if mime_type := getattr(document, "mime_type", None):
+        placeholder["mime_type"] = mime_type
+    file_size = getattr(document, "size", None)
+    if file_size is not None:
+        placeholder["approx_size_bytes"] = file_size
+
+
+def _fill_document_media_placeholder(placeholder: dict[str, Any], document) -> None:
+    """Populate placeholder fields for MessageMediaDocument (voice note, round video, file)."""
+    is_voice, is_round_video = _document_voice_and_round_note_flags(document)
+    duration, filename = _document_duration_and_filename(document)
+    if filename:
+        placeholder["filename"] = filename
+    if is_voice:
+        placeholder["type"] = "voice"
+    elif is_round_video:
+        placeholder["type"] = "round_video"
+    if (is_voice or is_round_video) and duration is not None:
+        placeholder["duration_seconds"] = duration
+    _apply_document_mime_and_size(placeholder, document)
+
+
+def _todo_completed_by_to_int(completed_by) -> int | None:
+    """Convert TL completed_by (int or Peer) to a plain Telegram id for JSON tool output."""
+    if completed_by is None:
+        return None
+    if isinstance(completed_by, int):
+        return completed_by
+    peer_id, _label = _forward_peer_id_and_type_label(completed_by)
+    return peer_id if isinstance(peer_id, int) else None
+
+
+def _fill_todo_media_placeholder(placeholder: dict[str, Any], media, todo_list) -> None:
+    """Populate placeholder fields for MessageMediaToDo."""
+    placeholder["type"] = "todo"
+    title_obj = getattr(todo_list, "title", None)
+    if title_obj and hasattr(title_obj, "text"):
+        placeholder["title"] = title_obj.text
+
+    items = getattr(todo_list, "list", [])
+    if not isinstance(items, list):
+        items = []
+    placeholder["items"] = []
+    for item in items:
+        item_dict = {
+            "id": getattr(item, "id", 0),
+            "text": getattr(getattr(item, "title", None), "text", ""),
+            "completed": False,
+        }
+        placeholder["items"].append(item_dict)
+
+    completions = getattr(media, "completions", [])
+    if not isinstance(completions, list):
+        completions = []
+    for completion in completions:
+        item_id = getattr(completion, "id", None)
+        completed_by = getattr(completion, "completed_by", None)
+        completed_at = getattr(completion, "date", None)
+
+        for pl_item in placeholder["items"]:
+            if pl_item["id"] == item_id:
+                pl_item["completed"] = True
+                if completed_by is not None:
+                    cid = _todo_completed_by_to_int(completed_by)
+                    if cid is not None:
+                        pl_item["completed_by"] = cid
+                if completed_at is not None:
+                    pl_item["completed_at"] = completed_at.isoformat()
+                break
+
+
+def _fill_poll_media_placeholder(placeholder: dict[str, Any], poll, results) -> None:
+    """Populate placeholder fields for MessageMediaPoll."""
+    placeholder["type"] = "poll"
+
+    question_obj = getattr(poll, "question", None)
+    if question_obj and hasattr(question_obj, "text"):
+        placeholder["question"] = question_obj.text
+
+    answers = getattr(poll, "answers", [])
+    placeholder["options"] = []
+    for answer in answers:
+        option_dict = {
+            "text": getattr(getattr(answer, "text", None), "text", ""),
+            "voters": 0,
+            "chosen": getattr(answer, "chosen", False),
+            "correct": getattr(answer, "correct", False),
+        }
+        placeholder["options"].append(option_dict)
+
+    if results and hasattr(results, "results"):
+        result_counts = getattr(results, "results", [])
+        for result in result_counts:
+            voters = getattr(result, "voters", 0)
+            for option in placeholder["options"]:
+                if option["voters"] == 0:
+                    option["voters"] = voters
+                    break
+
+    placeholder["total_voters"] = getattr(results, "total_voters", 0) if results else 0
+    placeholder["closed"] = getattr(poll, "closed", False)
+    placeholder["public_voters"] = getattr(poll, "public_voters", True)
+    placeholder["multiple_choice"] = getattr(poll, "multiple_choice", False)
+    placeholder["quiz"] = getattr(poll, "quiz", False)
+
+
+def _build_media_placeholder(message) -> dict[str, Any] | None:
+    """Return a lightweight, serializable media placeholder for LLM consumption.
+
+    Avoids returning raw Telethon media objects which are large and not LLM-friendly.
+    """
+    media = getattr(message, "media", None)
+    if not media:
+        return None
+
+    placeholder: dict[str, Any] = {}
+
+    match media.__class__.__name__:
+        case "MessageMediaDocument":
+            if document := getattr(media, "document", None):
+                _fill_document_media_placeholder(placeholder, document)
+
+        case "MessageMediaPhoto":
+            placeholder["type"] = "photo"
+            ph = getattr(media, "photo", None)
+            if (
+                ph
+                and getattr(ph, "sizes", None)
+                and (
+                    sized := [
+                        s
+                        for s in ph.sizes
+                        if getattr(s, "size", None) is not None
+                        and type(s).__name__ != "PhotoStrippedSize"
+                    ]
+                )
+            ):
+                largest = max(sized, key=lambda s: getattr(s, "size", 0))
+                placeholder["approx_size_bytes"] = largest.size
+            placeholder.setdefault("mime_type", "image/jpeg")
+
+        case "MessageMediaVoice":
+            placeholder["type"] = "voice"
+            if document := getattr(media, "document", None):
+                dur = _first_document_attribute_duration(document)
+                if dur is not None:
+                    placeholder["duration_seconds"] = dur
+
+        case "MessageMediaToDo":
+            if todo_list := getattr(media, "todo", None):
+                _fill_todo_media_placeholder(placeholder, media, todo_list)
+
+        case "MessageMediaPoll":
+            poll = getattr(media, "poll", None)
+            results = getattr(media, "results", None)
+            if poll:
+                _fill_poll_media_placeholder(placeholder, poll, results)
+
+        case _:
+            if mime_type := getattr(media, "mime_type", None):
+                placeholder["mime_type"] = mime_type
+
+            file_size = getattr(media, "size", None)
+            if file_size is not None:
+                placeholder["approx_size_bytes"] = file_size
+
+    return placeholder or None
+
+
+def _extract_topic_metadata(message: Any) -> dict[str, Any]:
+    """Extract topic_id from a Telegram message reply_to metadata."""
+    reply_to = getattr(message, "reply_to", None)
+    reply_to_msg_id = getattr(message, "reply_to_msg_id", None) or getattr(
+        reply_to, "reply_to_msg_id", None
+    )
+    forum_topic = bool(getattr(reply_to, "forum_topic", False))
+    reply_to_top_id = getattr(reply_to, "reply_to_top_id", None)
+    topic_id = reply_to_top_id or (reply_to_msg_id if forum_topic else None)
+    # Raw int here: this is an INTERNAL helper also consumed by the forum/thread
+    # search path (SearchRequest.top_msg_id, GetForumTopicsByIDRequest), which
+    # needs the int. Output stringification happens at the response boundary in
+    # build_message_result.
+    return {"topic_id": topic_id} if topic_id is not None else {}
+
+
+async def build_message_result(
+    client, message, entity_or_chat, link: str | None, include_chat_entity: bool = False
+) -> dict[str, Any]:
+    sender = await get_sender_info(client, message)
+    chat = build_entity_dict(entity_or_chat)
+    forward_info = await _extract_forward_info(message)
+
+    full_text = (
+        getattr(message, "text", None)
+        or getattr(message, "message", None)
+        or getattr(message, "caption", None)
+    ) or _service_action_placeholder_text(message)
+
+    result: dict[str, Any] = {
+        "id": message.id,
+        "date": message.date.isoformat() if getattr(message, "date", None) else None,
+        "text": full_text,
+        "link": link,
+        "sender": sender,
+    }
+
+    if include_chat_entity:
+        result["chat"] = chat
+
+    reply_to_msg_id = getattr(message, "reply_to_msg_id", None) or getattr(
+        getattr(message, "reply_to", None), "reply_to_msg_id", None
+    )
+    if reply_to_msg_id is not None:
+        result["reply_to_msg_id"] = reply_to_msg_id
+
+    # Topic metadata: derived from reply_to.forum_topic (set on forum thread messages).
+    result |= _extract_topic_metadata(message)
+
+    if hasattr(message, "media") and message.media:
+        media_placeholder = _build_media_placeholder(message)
+        if media_placeholder is not None:
+            result["media"] = media_placeholder
+            await _maybe_set_attachment_download_url(
+                result["media"], message, chat.get("id") if chat else None
+            )
+
+    if forward_info is not None:
+        result["forwarded_from"] = forward_info
+
+    reply_markup = _extract_reply_markup(message)
+    if reply_markup is not None:
+        result["reply_markup"] = reply_markup
+
+    return result
+
+
+def response_attachment_warning(messages: list[dict]) -> str | None:
+    """Return a warning string if DOMAIN is missing and any message has media.
+
+    One warning per entire response, not per message. Returns None when
+    there is no problem (valid domain, stdio transport, or no media messages).
+    """
+    if not messages:
+        return None
+    config = cfg()
+    if config.transport != "http" or config.public_base_url_normalized:
+        return None
+    has_media = any(bool(m.get("media")) for m in messages)
+    if not has_media:
+        return None
+    return (
+        f"⚠️ DOMAIN is '{config.domain}' — attachment_download_url DISABLED for media messages. "
+        "Set DOMAIN=<your-public-host> in .env to enable download links."
+    )
+
+
+class PremiumRequiredError(Exception):
+    """Exception raised when transcription fails due to non-premium account."""
+
+
+@dataclass
+class _TranscriptionCacheEntry:
+    """In-memory record of a TranscribeAudio attempt.
+
+    Three states, all time-bound to avoid stale data:
+
+    done(text, done_until_ts)
+        Transcription succeeded; ``done_until_ts`` is when this entry
+        expires (capped at ``_DONE_TTL_SECONDS``). After that the entry
+        is treated as a cache miss and the API is re-issued.
+
+    pending(transcription_id, pending_until_ts)
+        First call returned a pending transcription. The id is recorded
+        so a subsequent call within ``_PENDING_TTL_SECONDS`` can re-poll
+        using the same id without starting a new transcription.
+
+    rate_limited(until_ts)
+        Telegram returned a FloodWaitError. Do not re-issue the request
+        until ``time.time()`` exceeds ``until_ts``.
+    """
+
+    text: str | None = None
+    transcription_id: str | None = None
+    done_until_ts: float = 0.0
+    pending_until_ts: float = 0.0
+    until_ts: float = 0.0  # rate-limit expiry; 0 = not rate-limited
+
+    def state(self, now: float | None = None) -> str:
+        """Return the entry's current state evaluated at ``now``.
+
+        Possible values: ``"done"``, ``"pending"``, ``"rate_limited"``, or
+        ``"stale"`` when none of the above is active. ``now`` defaults to
+        the current wall clock; pass an explicit value when you need every
+        state check to be evaluated against the same instant (avoids TTL
+        boundary races where ``is_done`` and ``is_pending`` would each
+        read ``time.time()`` separately).
+        """
+        if now is None:
+            now = time.time()
+        if self.until_ts > 0.0 and now < self.until_ts:
+            return "rate_limited"
+        if (
+            self.text is not None
+            and self.transcription_id is None
+            and now < self.done_until_ts
+        ):
+            return "done"
+        if (
+            self.text is None
+            and self.transcription_id is not None
+            and now < self.pending_until_ts
+        ):
+            return "pending"
+        return "stale"
+
+    @property
+    def is_done(self) -> bool:
+        return self.state() == "done"
+
+    @property
+    def is_pending(self) -> bool:
+        return self.state() == "pending"
+
+    @property
+    def is_rate_limited(self) -> bool:
+        return self.state() == "rate_limited"
+
+
+# Module-level cache keyed by (peer_id, msg_id). Bounded by both a size
+# cap and per-entry TTLs to avoid unbounded growth across long server
+# uptimes. Keys are not security-sensitive — they are derived from the
+# same chat_entity/message_id arguments passed to the function.
+_TranscriptionCacheKey = tuple[str, int, int]
+_TRANSCRIPTION_CACHE: dict[_TranscriptionCacheKey, _TranscriptionCacheEntry] = {}
+
+# TTL for cached successful transcriptions. The actual Telegram cooldown
+# is ~39 minutes per message, but we keep done entries around longer so
+# that subsequent lookups for the same voice don't re-issue and trigger
+# a fresh cooldown window.
+_DONE_TTL_SECONDS = 3600
+
+# How long to remember a pending transcription_id before giving up. The
+# 30-iteration polling loop in _transcribe_single_voice_message sleeps
+# 1s between attempts (so ~30s) — set the TTL slightly above that to
+# survive cross-call polling when get_messages is called repeatedly.
+_PENDING_TTL_SECONDS = 120
+
+# Maximum entries to keep before pruning. Hard cap so the cache can't
+# grow unbounded across long server uptimes on a busy account.
+_TRANSCRIPTION_CACHE_MAX = 4096
+
+
+def _transcription_cache_key(
+    chat_entity: object, message_id: int
+) -> _TranscriptionCacheKey | None:
+    """Build a stable cache key from a Telethon chat entity and msg id.
+
+    The key is ``(peer_kind, peer_id, message_id)`` where ``peer_kind`` is
+    a short string ("user" / "channel" / "chat" / "unknown") that
+    disambiguates peer types — Telethon's integer peer ids are not
+    unique across user/channel/chat namespaces, so a key built from the
+    bare integer would let a user message and a channel message collide
+    when their ids happen to match.
+
+    Returns None when the peer id cannot be determined — in that case the
+    function will not cache, which preserves the previous (uncached)
+    behaviour for unusual entity types.
+    """
+    peer_kind = "unknown"
+    peer_id = getattr(chat_entity, "id", None)
+    if peer_id is None:
+        peer_id_obj = getattr(chat_entity, "peer_id", None)
+        if peer_id_obj is not None:
+            user_id = getattr(peer_id_obj, "user_id", None)
+            channel_id = getattr(peer_id_obj, "channel_id", None)
+            chat_id = getattr(peer_id_obj, "chat_id", None)
+            if user_id is not None:
+                peer_id = user_id
+                peer_kind = "user"
+            elif channel_id is not None:
+                peer_id = channel_id
+                peer_kind = "channel"
+            elif chat_id is not None:
+                peer_id = chat_id
+                peer_kind = "chat"
+    else:
+        # The entity object itself is typed (User / Channel / Chat /
+        # UserFull / etc.). Prefer its class name over the bare integer.
+        cls_name = type(chat_entity).__name__.lower()
+        if "user" in cls_name:
+            peer_kind = "user"
+        elif "channel" in cls_name or "forum" in cls_name:
+            peer_kind = "channel"
+        elif "chat" in cls_name:
+            peer_kind = "chat"
+    return None if peer_id is None else (peer_kind, int(peer_id), message_id)
+
+
+def _transcription_cache_get(
+    key: _TranscriptionCacheKey,
+) -> _TranscriptionCacheEntry | None:
+    """Return the cached entry if it's still useful, else evict and return None.
+
+    On a hit, the key is moved to the end of the cache (pop + reinsert) so
+    that frequent callers update their recency under the LRU eviction policy.
+    """
+    entry = _TRANSCRIPTION_CACHE.get(key)
+    if entry is None:
+        return None
+    if entry.state() in ("done", "pending", "rate_limited"):
+        # Pop and reinsert to mark as most-recently-used under LRU.
+        _TRANSCRIPTION_CACHE[key] = _TRANSCRIPTION_CACHE.pop(key)
+        return entry
+    # Entry is fully stale (no live state): evict so the next call re-issues.
+    _TRANSCRIPTION_CACHE.pop(key, None)
+    return None
+
+
+def _transcription_cache_set(
+    key: _TranscriptionCacheKey, entry: _TranscriptionCacheEntry
+) -> None:
+    """Store an entry, pruning the oldest 25% of entries if the cap is hit."""
+    if len(_TRANSCRIPTION_CACHE) >= _TRANSCRIPTION_CACHE_MAX:
+        victims = max(1, _TRANSCRIPTION_CACHE_MAX // 4)
+        for k in list(_TRANSCRIPTION_CACHE.keys())[:victims]:
+            _TRANSCRIPTION_CACHE.pop(k, None)
+    # Pop first so the new entry lands at the end of the dict — makes it
+    # the most-recently-used under the LRU policy in _transcription_cache_get.
+    _TRANSCRIPTION_CACHE.pop(key, None)
+    _TRANSCRIPTION_CACHE[key] = entry
+
+
+async def _is_user_premium(client) -> bool:
+    """Check if the current user has Telegram Premium."""
+    try:
+        me = await client.get_me()
+        return bool(getattr(me, "premium", False))
+    except Exception as e:
+        logger.warning("Failed to check user premium status: %s", e)
+        return False
+
+
+async def _transcribe_single_voice_message(
+    client, chat_entity, message_id: int
+) -> str | None:
+    """Transcribe a single voice message; poll when pending. Raises PremiumRequiredError if required.
+
+    Results are cached in ``_TRANSCRIPTION_CACHE`` so repeat calls for the same
+    (peer_id, msg_id) within the Telegram per-message cooldown window do not
+    re-issue TranscribeAudio and trip the 39-minute FloodWaitError penalty.
+    """
+    cache_key = _transcription_cache_key(chat_entity, message_id)
+    transcription_id: str | None = None
+    if cache_key is not None:
+        cached = _transcription_cache_get(cache_key)
+        if cached is not None:
+            cache_state = cached.state()
+            if cache_state == "done":
+                return cached.text
+            if cache_state == "pending":
+                # A previous call kicked off a transcription that is still
+                # pending. Treat the cached id as the active transcription
+                # id and fall through to the polling loop below — the
+                # existing TranscribeAudioRequest will re-poll and Telegram
+                # will return text once the transcription is ready.
+                transcription_id = cached.transcription_id
+                logger.debug(
+                    "Resuming pending transcription %s for message %s",
+                    transcription_id,
+                    message_id,
+                )
+            elif cache_state == "rate_limited":
+                logger.debug(
+                    "Transcription for message %s is rate-limited; skipping",
+                    message_id,
+                )
+                return None
+
+    try:
+        if transcription_id is not None:
+            # Resuming a cached pending transcription — skip the kick-off
+            # call and let the polling loop below drive the next request.
+            result = None
+        else:
+            result = await client(
+                TranscribeAudioRequest(peer=chat_entity, msg_id=message_id)
+            )
+
+        # Extract completed text first (if the kick-off call already finished).
+        if result is not None and (
+            hasattr(result, "text")
+            and result.text
+            and not getattr(result, "pending", False)
+        ):
+            if cache_key is not None:
+                _transcription_cache_set(
+                    cache_key,
+                    _TranscriptionCacheEntry(
+                        text=result.text,
+                        done_until_ts=time.time() + _DONE_TTL_SECONDS,
+                    ),
+                )
+            return result.text
+
+        # Capture the pending id from the kick-off call (if any).
+        if (
+            result is not None
+            and hasattr(result, "pending")
+            and result.pending
+            and hasattr(result, "transcription_id")
+        ):
+            transcription_id = result.transcription_id
+
+        # Run the polling loop whenever we have a transcription_id, whether
+        # it came from this call's kick-off (result.pending) or from a
+        # cached resume (transcription_id set at the top of the function).
+        if transcription_id is not None:
+            logger.debug(
+                "Transcription pending for message %s, polling for completion...",
+                message_id,
+            )
+            # Record (or refresh) the pending state in the cache.
+            if cache_key is not None:
+                _transcription_cache_set(
+                    cache_key,
+                    _TranscriptionCacheEntry(
+                        transcription_id=transcription_id,
+                        pending_until_ts=time.time() + _PENDING_TTL_SECONDS,
+                    ),
+                )
+
+            max_attempts = 30
+            for attempt in range(max_attempts):
+                await asyncio.sleep(1)
+
+                # If a previous poll recorded a FloodWaitError for this
+                # message, honor the cooldown instead of burning more of it
+                # on requests Telegram will reject.
+                if cache_key is not None:
+                    cached = _transcription_cache_get(cache_key)
+                    if cached is not None and cached.state() == "rate_limited":
+                        logger.debug(
+                            "Polling stopped for message %s: rate-limited",
+                            message_id,
+                        )
+                        return None
+
+                try:
+                    poll_result = await client(
+                        TranscribeAudioRequest(peer=chat_entity, msg_id=message_id)
+                    )
+
+                    if (
+                        hasattr(poll_result, "transcription_id")
+                        and poll_result.transcription_id == transcription_id
+                    ):
+                        if hasattr(poll_result, "pending") and poll_result.pending:
+                            continue
+                        if hasattr(poll_result, "text") and poll_result.text:
+                            logger.debug(
+                                "Transcription completed for message %s after %s polls",
+                                message_id,
+                                attempt + 1,
+                            )
+                            if cache_key is not None:
+                                _transcription_cache_set(
+                                    cache_key,
+                                    _TranscriptionCacheEntry(
+                                        text=poll_result.text,
+                                        done_until_ts=time.time() + _DONE_TTL_SECONDS,
+                                    ),
+                                )
+                            return poll_result.text
+                        logger.warning(
+                            "Unexpected transcription state for message %s", message_id
+                        )
+                        return None
+
+                except Exception as poll_error:
+                    if isinstance(poll_error, FloodWaitError):
+                        wait_seconds = getattr(poll_error, "seconds", 0) or 0
+                        if cache_key is not None:
+                            _transcription_cache_set(
+                                cache_key,
+                                _TranscriptionCacheEntry(
+                                    until_ts=time.time() + wait_seconds
+                                ),
+                            )
+                    logger.warning(
+                        "Error polling transcription for message %s: %s",
+                        message_id,
+                        poll_error,
+                    )
+                    return None
+
+            logger.warning(
+                "Transcription polling timeout for message %s after %s attempts",
+                message_id,
+                max_attempts,
+            )
+            return None
+
+        logger.debug("No transcription available for message %s", message_id)
+        return None
+
+    except FloodWaitError as e:
+        # Telegram refuses to even start a fresh transcription for this
+        # voice message until the cooldown expires. Record it so subsequent
+        # calls within the window don't re-issue the request.
+        wait_seconds = getattr(e, "seconds", 0) or 0
+        if cache_key is not None:
+            _transcription_cache_set(
+                cache_key,
+                _TranscriptionCacheEntry(until_ts=time.time() + wait_seconds),
+            )
+        logger.warning("Transcription rate-limited for message %s: %s", message_id, e)
+        return None
+    except RPCError as e:
+        error_msg = str(e).lower()
+        if "premium" in error_msg and "required" in error_msg:
+            raise PremiumRequiredError(
+                f"Premium account required for transcription: {e}"
+            ) from None
+        logger.warning("Transcription failed for message %s: %s", message_id, e)
+        return None
+    except Exception as e:
+        logger.warning(
+            "Unexpected error during transcription of message %s: %s",
+            message_id,
+            e,
+        )
+        return None
+
+
+async def transcribe_voice_messages(
+    messages: list[dict[str, Any]],
+    chat_entity,
+    *,
+    client=None,
+) -> None:
+    """Transcribe voice message dicts in parallel; TaskGroup cancels peers on PremiumRequiredError."""
+    if client is None:
+        client = await get_connected_client()
+
+    is_premium = await _is_user_premium(client)
+
+    if not is_premium:
+        logger.debug(
+            "Skipping voice transcription - user does not have Telegram Premium"
+        )
+        return
+
+    voice_messages = []
+    for msg in messages:
+        media = msg.get("media")
+        has_voice_type = (
+            media and isinstance(media, dict) and media.get("type") == "voice"
+        )
+        has_transcription = "transcription" in msg
+
+        if has_voice_type and not has_transcription:
+            voice_messages.append(msg)
+
+    if not voice_messages:
+        return
+
+    logger.debug("Found %s voice messages to transcribe", len(voice_messages))
+
+    async def transcribe_task(msg_dict: dict[str, Any]) -> None:
+        message_id = msg_dict["id"]
+        transcription = await _transcribe_single_voice_message(
+            client, chat_entity, message_id
+        )
+        if transcription:
+            msg_dict["transcription"] = transcription
+            logger.debug(
+                "Transcribed voice message %s: %s...",
+                message_id,
+                transcription[:50],
+            )
+
+    try:
+        async with asyncio.TaskGroup() as tg:
+            for msg_dict in voice_messages:
+                tg.create_task(transcribe_task(msg_dict))
+    except ExceptionGroup as eg:
+        premium_errors = [
+            e for e in eg.exceptions if isinstance(e, PremiumRequiredError)
+        ]
+        if premium_errors:
+            logger.info(
+                "Voice transcription cancelled - account lacks premium despite initial check"
+            )
+        else:
+            raise
+    except Exception as e:
+        logger.warning("Voice transcription failed with unexpected error: %s", e)

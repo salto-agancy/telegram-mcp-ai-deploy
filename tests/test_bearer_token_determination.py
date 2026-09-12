@@ -1,0 +1,674 @@
+"""
+Comprehensive tests for bearer token determination and authentication logic.
+
+This module tests the core authentication mechanisms including:
+- Bearer token extraction from HTTP headers
+- Authentication context management
+- Transport mode detection
+- Environment variable behavior
+- Error handling for invalid tokens
+"""
+
+import asyncio
+import os
+from unittest.mock import patch
+
+import pytest
+
+from src.client.connection import (
+    _current_token,
+    generate_bearer_token,
+    set_request_token,
+)
+from src.config.server_config import ServerConfig, ServerMode, set_config
+from src.server_components.auth import (
+    extract_bearer_token,
+    extract_bearer_token_from_request,
+    with_auth_context,
+)
+from src.server_components.session_token_validation import (
+    InvalidSessionTokenError,
+    validate_session_token,
+)
+from tests.conftest import VALID_TEST_BEARER_TOKEN, make_access_token
+
+
+class TestBearerTokenExtraction:
+    """Test the extract_bearer_token() function with various scenarios."""
+
+    def test_extract_bearer_token_http_mode_valid_token(self, http_auth_config):
+        """Test extracting a valid bearer token in HTTP mode."""
+        # Mock HTTP headers with valid bearer token
+        mock_headers = {"authorization": f"Bearer {VALID_TEST_BEARER_TOKEN}"}
+
+        with patch(
+            "fastmcp.server.dependencies.get_http_headers",
+            return_value=mock_headers,
+        ):
+            token = extract_bearer_token()
+
+            assert token == VALID_TEST_BEARER_TOKEN
+
+    def test_extract_bearer_token_http_mode_invalid_format(self, http_auth_config):
+        """Test extracting token with invalid authorization header format."""
+        # Test various invalid formats
+        invalid_headers = [
+            {"authorization": f"Basic {VALID_TEST_BEARER_TOKEN}"},  # Wrong scheme
+            {"authorization": "Bearer"},  # No token
+            {"authorization": "Bearer "},  # Empty token
+            {"authorization": f"bearer {VALID_TEST_BEARER_TOKEN}"},  # Wrong case
+            {"authorization": VALID_TEST_BEARER_TOKEN},  # No Bearer prefix
+        ]
+
+        for headers in invalid_headers:
+            with patch(
+                "fastmcp.server.dependencies.get_http_headers", return_value=headers
+            ):
+                token = extract_bearer_token()
+                assert token is None, f"Expected None for headers: {headers}"
+
+    def test_extract_bearer_token_http_mode_missing_header(self, http_auth_config):
+        """Test extracting token when authorization header is missing."""
+        mock_headers = {}  # No authorization header
+
+        with (
+            patch(
+                "fastmcp.server.dependencies.get_http_headers",
+                return_value=mock_headers,
+            ),
+        ):
+            token = extract_bearer_token()
+
+            assert token is None
+
+    def test_extract_bearer_token_stdio_mode(self, stdio_config):
+        """Test that token extraction returns None in stdio mode."""
+        # Mock config to return STDIO transport
+        mock_config = ServerConfig()
+        mock_config.server_mode = ServerMode.STDIO
+        set_config(mock_config)
+
+        token = extract_bearer_token()
+        assert token is None
+
+    def test_extract_bearer_token_http_mode_whitespace_handling(self, http_auth_config):
+        """Test that token extraction handles whitespace correctly."""
+        test_cases = [
+            (f"Bearer {VALID_TEST_BEARER_TOKEN}  ", VALID_TEST_BEARER_TOKEN),
+            (f"Bearer {VALID_TEST_BEARER_TOKEN}\t", VALID_TEST_BEARER_TOKEN),
+            (f"Bearer {VALID_TEST_BEARER_TOKEN}\n", VALID_TEST_BEARER_TOKEN),
+        ]
+
+        for auth_header, expected_token in test_cases:
+            mock_headers = {"authorization": auth_header}
+            with patch(
+                "fastmcp.server.dependencies.get_http_headers",
+                return_value=mock_headers,
+            ):
+                token = extract_bearer_token()
+                assert token == expected_token, f"Failed for header: {auth_header}"
+
+    def test_extract_bearer_token_exception_handling(self, http_auth_config):
+        """Test that extract_bearer_token handles exceptions gracefully."""
+        with (
+            patch(
+                "fastmcp.server.dependencies.get_http_headers",
+                side_effect=Exception("Network error"),
+            ),
+        ):
+            token = extract_bearer_token()
+            assert token is None
+
+
+class TestWithAuthContextDecorator:
+    """Test the with_auth_context decorator behavior."""
+
+    def test_with_auth_context_disable_auth_true(
+        self, http_no_auth_config, async_success_func
+    ):
+        """Test decorator behavior when DISABLE_AUTH is True."""
+
+        decorated_func = with_auth_context(async_success_func)
+        result = asyncio.run(decorated_func())
+
+        assert result == "success"
+
+    def test_with_auth_context_http_mode_valid_token(
+        self, http_auth_config, async_success_func
+    ):
+        """Test decorator with valid token in HTTP mode."""
+
+        with (
+            patch(
+                "fastmcp.server.dependencies.get_access_token",
+                return_value=make_access_token("valid_token"),
+            ),
+        ):
+            decorated_func = with_auth_context(async_success_func)
+            result = asyncio.run(decorated_func())
+            assert result == "success"
+
+    def test_with_auth_context_http_mode_missing_or_invalid_token(
+        self, http_auth_config, async_success_func
+    ):
+        """Test decorator with missing or invalid token in HTTP mode raises correct error."""
+
+        with patch(
+            "fastmcp.server.dependencies.get_access_token",
+            return_value=None,
+        ):
+            decorated_func = with_auth_context(async_success_func)
+
+            with pytest.raises(Exception) as exc_info:
+                asyncio.run(decorated_func())
+
+            assert "Missing Bearer token" in str(exc_info.value)
+
+    def test_with_auth_context_stdio_mode_no_token(
+        self, stdio_config, async_success_func
+    ):
+        """Test decorator with no token in stdio mode (fallback behavior)."""
+
+        with patch(
+            "src.server_components.auth.extract_bearer_token", return_value=None
+        ):
+            decorated_func = with_auth_context(async_success_func)
+            result = asyncio.run(decorated_func())
+            assert result == "success"
+
+    def test_with_auth_context_stdio_mode_with_token(
+        self, stdio_config, async_success_func
+    ):
+        """Test decorator with token in stdio mode (disable_auth short-circuits)."""
+
+        with patch(
+            "fastmcp.server.dependencies.get_access_token",
+            return_value=None,
+        ):
+            decorated_func = with_auth_context(async_success_func)
+            result = asyncio.run(decorated_func())
+            assert result == "success"
+
+    def test_with_auth_context_async_function(self, http_auth_config):
+        """Test decorator with async function."""
+
+        async def async_mock_func():
+            return "async_success"
+
+        with (
+            patch("src.client.connection.set_request_token"),
+            patch(
+                "fastmcp.server.dependencies.get_access_token",
+                return_value=make_access_token("test_token"),
+            ),
+        ):
+            decorated_func = with_auth_context(async_mock_func)
+            result = asyncio.run(decorated_func())
+            assert result == "async_success"
+
+
+class TestTokenGeneration:
+    """Test bearer token generation functionality."""
+
+    def test_generate_bearer_token_format(self, http_auth_config):
+        """Test that generated tokens have correct format."""
+        token = generate_bearer_token()
+
+        # Should be a string
+        assert isinstance(token, str)
+        # Should be URL-safe base64 without padding
+        assert "=" not in token
+        assert "+" not in token or "/" not in token  # URL-safe base64
+        # Should be reasonable length (32 bytes = 43 chars in base64, minus padding)
+        assert len(token) >= 40
+
+    def test_generate_bearer_token_uniqueness(self):
+        """Test that generated tokens are unique."""
+        tokens = [generate_bearer_token() for _ in range(100)]
+
+        # All tokens should be unique
+        assert len(set(tokens)) == 100
+
+    def test_generate_bearer_token_cryptographic_strength(self):
+        """Test that generated tokens use cryptographically secure random."""
+        # This is more of a smoke test - we can't easily test cryptographic strength
+        # but we can verify the token looks like it came from secrets.token_bytes
+        token = generate_bearer_token()
+
+        # Should contain a mix of characters (not all the same)
+        assert len(set(token)) > 10  # Should have good character diversity
+
+
+class TestContextVariableManagement:
+    """Test the context variable management for tokens."""
+
+    def test_set_request_token(self):
+        """Test setting request token in context."""
+        test_token = "test_token_123"
+
+        # Set token
+        set_request_token(test_token)
+
+        # Verify it's set in context
+        assert _current_token.get() == test_token
+
+    def test_set_request_token_none(self):
+        """Test setting None token in context."""
+        # Set None token
+        set_request_token(None)
+
+        # Verify it's None in context
+        assert _current_token.get() is None
+
+    def test_context_isolation(self):
+        """Test that context variables are isolated between different contexts."""
+        from contextvars import copy_context
+
+        def set_token_in_context(token_value):
+            set_request_token(token_value)
+            return _current_token.get()
+
+        # Test in different contexts
+        ctx1 = copy_context()
+        ctx2 = copy_context()
+
+        result1 = ctx1.run(set_token_in_context, "token1")
+        result2 = ctx2.run(set_token_in_context, "token2")
+
+        # Results should be different
+        assert result1 == "token1"
+        assert result2 == "token2"
+
+        # Original context should be unchanged
+        assert _current_token.get() is None
+
+
+class TestEnvironmentVariableBehavior:
+    """Test behavior with different environment variable configurations."""
+
+    def test_disable_auth_environment_variable(self):
+        """Test DISABLE_AUTH environment variable parsing."""
+        test_cases = [
+            ("true", True),
+            ("TRUE", True),
+            ("1", True),
+            ("yes", True),
+            ("false", False),
+            ("FALSE", False),
+            ("0", False),
+            ("no", False),
+            ("", True),  # Empty string falls back to STDIO mode (auth disabled)
+            ("invalid", True),  # Invalid values fall back to STDIO mode (auth disabled)
+        ]
+
+        for env_value, expected in test_cases:
+            with patch.dict(os.environ, {"DISABLE_AUTH": env_value}):
+                # Clear config cache so the next cfg() call re-reads the env var
+                import src.config.server_config as server_config
+
+                server_config.reset_cfg_for_tests()
+
+                assert expected == server_config.cfg().disable_auth, (
+                    f"Failed for DISABLE_AUTH={env_value}"
+                )
+
+    def test_disable_auth_default_value(self):
+        """Test that DISABLE_AUTH defaults to True (disabled) in STDIO mode when not set."""
+        clean_environment = {}
+        if home := os.environ.get("HOME"):
+            clean_environment["HOME"] = home
+        with patch.dict(os.environ, clean_environment, clear=True):
+            # Ensure DISABLE_AUTH not set
+            os.environ.pop("DISABLE_AUTH", None)
+
+            # Clear config cache so the next cfg() call re-reads the env
+            import src.config.server_config as server_config
+
+            server_config.reset_cfg_for_tests()
+
+            # In STDIO mode (default), auth should be disabled
+            assert server_config.cfg().disable_auth is True
+
+
+class TestTransportModeDetection:
+    """Test transport mode detection and authentication requirements."""
+
+    def test_http_transport_authentication_required(
+        self, http_auth_config, async_success_func
+    ):
+        """Test that HTTP transport requires authentication when DISABLE_AUTH is False."""
+        with patch(
+            "fastmcp.server.dependencies.get_access_token",
+            return_value=None,
+        ):
+            decorated_func = with_auth_context(async_success_func)
+
+            with pytest.raises(Exception) as exc_info:
+                asyncio.run(decorated_func())
+
+            assert "HTTP requests require authentication" in str(exc_info.value)
+
+    def test_stdio_transport_authentication_optional(
+        self, stdio_config, async_success_func
+    ):
+        """Test that stdio transport allows fallback when no token provided."""
+        with patch(
+            "src.server_components.auth.extract_bearer_token", return_value=None
+        ):
+            decorated_func = with_auth_context(async_success_func)
+            result = asyncio.run(decorated_func())
+            assert result == "success"
+
+    def test_transport_mode_from_environment(self, http_auth_config):
+        """Test that transport is correctly determined from server mode."""
+        # Test that different server modes result in correct transport
+        from src.config.server_config import ServerConfig, ServerMode, set_config
+
+        test_cases = [
+            (ServerMode.HTTP_AUTH, "http"),
+            (ServerMode.HTTP_NO_AUTH, "http"),
+            (ServerMode.STDIO, "stdio"),
+        ]
+
+        for server_mode, expected_transport in test_cases:
+            config = ServerConfig()
+            config.server_mode = server_mode
+            set_config(config)
+
+            assert config.transport == expected_transport, (
+                f"Failed for server_mode={server_mode}"
+            )
+
+
+class TestBearerTokenIntegration:
+    """Test the full integration of bearer token extraction in real HTTP scenarios.
+
+    NOTE: These tests mock the @with_auth_context decorator directly and don't test
+    the actual FastMCP integration. For tests that verify the real decorator order
+    issue and FastMCP integration, see test_fastmcp_decorator_integration.py
+    """
+
+    def test_with_auth_context_real_http_headers(
+        self, http_auth_config, async_success_func
+    ):
+        """Test that @with_auth_context properly extracts tokens from real HTTP headers."""
+
+        with patch(
+            "fastmcp.server.dependencies.get_access_token",
+            return_value=make_access_token(VALID_TEST_BEARER_TOKEN),
+        ):
+            decorated_func = with_auth_context(async_success_func)
+            result = asyncio.run(decorated_func())
+            assert result == "success"
+
+    def test_with_auth_context_malformed_bearer_token(
+        self, http_auth_config, async_success_func
+    ):
+        """Test that malformed Bearer tokens are properly rejected."""
+        with patch(
+            "fastmcp.server.dependencies.get_access_token",
+            return_value=None,
+        ):
+            decorated_func = with_auth_context(async_success_func)
+
+            with pytest.raises(Exception) as exc_info:
+                asyncio.run(decorated_func())
+
+            assert "Missing Bearer token" in str(exc_info.value)
+
+    def test_with_auth_context_case_sensitive_bearer(
+        self, http_auth_config, async_success_func
+    ):
+        """Test that Bearer token is case-sensitive (auth middleware rejects wrong case)."""
+        with patch(
+            "fastmcp.server.dependencies.get_access_token",
+            return_value=None,
+        ):
+            decorated_func = with_auth_context(async_success_func)
+            with pytest.raises(Exception) as exc_info:
+                asyncio.run(decorated_func())
+            assert "Missing Bearer token" in str(exc_info.value)
+
+    def test_with_auth_context_empty_token_after_bearer(
+        self, http_auth_config, async_success_func
+    ):
+        """Test that empty token after 'Bearer ' is rejected."""
+        with patch(
+            "fastmcp.server.dependencies.get_access_token",
+            return_value=None,
+        ):
+            decorated_func = with_auth_context(async_success_func)
+            with pytest.raises(Exception) as exc_info:
+                asyncio.run(decorated_func())
+            assert "Missing Bearer token" in str(exc_info.value)
+
+    def test_with_auth_context_whitespace_only_token(
+        self, http_auth_config, async_success_func
+    ):
+        """Test that whitespace-only tokens are rejected."""
+        with patch(
+            "fastmcp.server.dependencies.get_access_token",
+            return_value=None,
+        ):
+            decorated_func = with_auth_context(async_success_func)
+            with pytest.raises(Exception) as exc_info:
+                asyncio.run(decorated_func())
+            assert "Missing Bearer token" in str(exc_info.value)
+
+    def test_with_auth_context_token_with_whitespace_trimmed(
+        self, http_auth_config, async_success_func
+    ):
+        """Test that valid tokens with surrounding whitespace are properly trimmed."""
+        with patch(
+            "fastmcp.server.dependencies.get_access_token",
+            return_value=make_access_token(VALID_TEST_BEARER_TOKEN),
+        ):
+            decorated_func = with_auth_context(async_success_func)
+            result = asyncio.run(decorated_func())
+            assert result == "success"
+
+    def test_with_auth_context_fallback_to_default_session_detection(
+        self, http_auth_config, async_success_func
+    ):
+        """Test to detect if system incorrectly falls back to default session when token is provided."""
+        with (
+            patch(
+                "fastmcp.server.dependencies.get_access_token",
+                return_value=make_access_token("ValidToken123456789"),
+            ),
+            patch("src.server_components.auth.set_request_token") as mock_set_token,
+        ):
+            decorated_func = with_auth_context(async_success_func)
+            result = asyncio.run(decorated_func())
+            mock_set_token.assert_called_with("ValidToken123456789")
+            assert result == "success"
+
+    def test_with_auth_context_no_fallback_when_token_present(
+        self, http_auth_config, async_success_func
+    ):
+        """Test that system does NOT fall back to default session when valid token is present."""
+        test_cases = [
+            "SimpleToken123",
+            "TokenWithSpecialChars!@#$%",
+            "VeryLongTokenThatShouldStillWork123456789",
+            "token-with-dashes",
+            "token_with_underscores",
+        ]
+        for expected_token in test_cases:
+            with (
+                patch(
+                    "fastmcp.server.dependencies.get_access_token",
+                    return_value=make_access_token(expected_token),
+                ),
+                patch("src.server_components.auth.set_request_token") as mock_set_token,
+            ):
+                decorated_func = with_auth_context(async_success_func)
+                result = asyncio.run(decorated_func())
+                mock_set_token.assert_called_with(expected_token)
+                assert result == "success", f"Failed for token: {expected_token}"
+
+    def test_with_auth_context_debug_token_extraction_flow(
+        self, http_auth_config, async_success_func
+    ):
+        """Test the complete token extraction flow to debug fallback issues."""
+        test_token = "DebugToken123456789"
+        with patch(
+            "fastmcp.server.dependencies.get_access_token",
+            return_value=make_access_token(test_token),
+        ):
+            decorated_func = with_auth_context(async_success_func)
+            result = asyncio.run(decorated_func())
+            assert result == "success"
+
+
+class TestErrorHandling:
+    """Test error handling in authentication scenarios."""
+
+    def test_missing_token_error_message(self, http_auth_config, async_success_func):
+        """Test error message when get_access_token returns None (invalid/missing token)."""
+        with patch(
+            "fastmcp.server.dependencies.get_access_token",
+            return_value=None,
+        ):
+            decorated_func = with_auth_context(async_success_func)
+            with pytest.raises(Exception) as exc_info:
+                asyncio.run(decorated_func())
+
+            error_msg = str(exc_info.value)
+            assert "Missing Bearer token" in error_msg
+            assert "Authorization: Bearer <your-token>" in error_msg
+
+    def test_extract_bearer_token_reserved_names_rejected(self, http_auth_config):
+        """Test that reserved session names are rejected as bearer tokens."""
+        from src.server_components.session_token_validation import (
+            RESERVED_SESSION_NAMES,
+        )
+
+        # Test each reserved name
+        for reserved_name in RESERVED_SESSION_NAMES:
+            mock_headers = {"authorization": f"Bearer {reserved_name}"}
+
+            with (
+                patch(
+                    "fastmcp.server.dependencies.get_http_headers",
+                    return_value=mock_headers,
+                ),
+                patch(
+                    "src.server_components.session_token_validation.logger"
+                ) as mock_logger,
+            ):
+                token = extract_bearer_token()
+
+                assert token is None, (
+                    f"Reserved name '{reserved_name}' should be rejected"
+                )
+                mock_logger.warning.assert_called_once()
+                assert reserved_name in str(mock_logger.warning.call_args)
+
+                mock_logger.reset_mock()
+
+    def test_extract_bearer_token_reserved_names_case_insensitive(
+        self, http_auth_config
+    ):
+        """Test that reserved name validation is case-insensitive."""
+        reserved_names_upper = ["TELEGRAM", "Default", "SESSION"]
+        reserved_names_mixed = ["TeLeGrAm", "DeFaUlT", "SeSsIoN"]
+
+        for upper_name, mixed_name in zip(
+            reserved_names_upper, reserved_names_mixed, strict=False
+        ):
+            # Test uppercase
+            mock_headers = {"authorization": f"Bearer {upper_name}"}
+            with patch(
+                "fastmcp.server.dependencies.get_http_headers",
+                return_value=mock_headers,
+            ):
+                token = extract_bearer_token()
+                assert token is None, (
+                    f"Uppercase reserved name '{upper_name}' should be rejected"
+                )
+
+            # Test mixed case
+            mock_headers = {"authorization": f"Bearer {mixed_name}"}
+            with patch(
+                "fastmcp.server.dependencies.get_http_headers",
+                return_value=mock_headers,
+            ):
+                token = extract_bearer_token()
+                assert token is None, (
+                    f"Mixed case reserved name '{mixed_name}' should be rejected"
+                )
+
+    def test_extract_bearer_token_valid_format_allowed(self, http_auth_config):
+        """Test that properly formatted bearer tokens are accepted."""
+        for token in (VALID_TEST_BEARER_TOKEN, generate_bearer_token()):
+            mock_headers = {"authorization": f"Bearer {token}"}
+
+            with patch(
+                "fastmcp.server.dependencies.get_http_headers",
+                return_value=mock_headers,
+            ):
+                extracted_token = extract_bearer_token()
+
+                assert extracted_token == token
+
+    def test_extract_bearer_token_invalid_format_rejected(self, http_auth_config):
+        """Test that legacy short or path-like tokens are rejected."""
+        for token in ("my-custom-session", "../victim", "short"):
+            mock_headers = {"authorization": f"Bearer {token}"}
+            with patch(
+                "fastmcp.server.dependencies.get_http_headers",
+                return_value=mock_headers,
+            ):
+                assert extract_bearer_token() is None
+
+    def test_validate_session_token_raises_on_invalid(self):
+        with pytest.raises(InvalidSessionTokenError):
+            validate_session_token("not-a-valid-token")
+
+    def test_extract_bearer_token_from_request_reserved_names_rejected(
+        self, http_auth_config
+    ):
+        """Test that extract_bearer_token_from_request also rejects reserved names."""
+        from src.server_components.session_token_validation import (
+            RESERVED_SESSION_NAMES,
+        )
+
+        # Create a mock request object
+        class MockRequest:
+            def __init__(self, auth_header):
+                self.headers = {"authorization": auth_header}
+
+        for reserved_name in RESERVED_SESSION_NAMES:
+            mock_request = MockRequest(f"Bearer {reserved_name}")
+
+            with patch(
+                "src.server_components.session_token_validation.logger"
+            ) as mock_logger:
+                token = extract_bearer_token_from_request(mock_request)
+
+                assert token is None, (
+                    f"Reserved name '{reserved_name}' should be rejected"
+                )
+                mock_logger.warning.assert_called_once()
+
+                mock_logger.reset_mock()
+
+    def test_extract_bearer_token_exception_logging(self, http_auth_config):
+        """Test that exceptions in extract_bearer_token are logged."""
+        with (
+            patch(
+                "fastmcp.server.dependencies.get_http_headers",
+                side_effect=Exception("Network error"),
+            ),
+            patch("src.server_components.auth.logger") as mock_logger,
+        ):
+            token = extract_bearer_token()
+
+            assert token is None
+            # Should log the warning
+            mock_logger.warning.assert_called_once()
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

@@ -1,0 +1,26 @@
+# Generic ACL example only. Copy to an ignored secrets/acl.yaml and replace the principal.
+# The automated installer normally renders this file from TELEGRAM_ACCESS_MODE and
+# TELEGRAM_ALLOWED_CHATS without printing the bearer principal.
+blocked_peers:
+  - 777000          # Telegram service notifications and login codes
+  - 93372553        # BotFather
+  - 178220800       # SpamBot
+  - "@BotFather"
+  - "@SpamBot"
+
+principals:
+  REPLACE_WITH_BACKEND_BEARER:
+    chats:
+      - me
+    read_only: true
+    allow_global_search: true
+    allow_mtproto: false
+
+  # Optional write profile. Keep commented until the operator approves exact chats.
+  # REPLACE_WITH_ANOTHER_BACKEND_BEARER:
+  #   chats:
+  #     - -1001234567890
+  #     - "@example_group"
+  #   read_only: false
+  #   allow_global_search: false
+  #   allow_mtproto: false

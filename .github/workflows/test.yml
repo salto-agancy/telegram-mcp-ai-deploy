@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.1.0
+        with:
+          version: "0.10.6"
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: make lint
+
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.1.0
+        with:
+          version: "0.10.6"
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: make test
+
+  security-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.1.0
+        with:
+          version: "0.10.6"
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: make test-security
+      - run: make test-installer
+
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: cp .env.example .env && cp .runtime.env.example .runtime.env
+      - run: mkdir -p secrets && touch secrets/backend_bearer secrets/oauth_client_id secrets/oauth_client_secret secrets/cloudflared_token secrets/acl.yaml
+      - run: docker compose config --quiet
+      - run: docker build --check .
+      - run: bash -n scripts/*.sh scripts/lib/*.sh

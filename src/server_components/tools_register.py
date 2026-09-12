@@ -1,0 +1,547 @@
+import asyncio
+import contextlib
+import functools
+import inspect
+import json
+import os
+import time
+import traceback
+from typing import Any
+
+from fastmcp import FastMCP
+from mcp.types import ToolAnnotations
+
+from src.config.server_config import cfg
+from src.server_components import auth as server_auth
+from src.server_components import bot_restrictions
+from src.server_components import errors as server_errors
+from src.server_components.mcp_tool_types import (
+    AllowDangerous,
+    AutoExpandBatches,
+    ChatId,
+    ChatTypeComma,
+    ContactFirstName,
+    ContactLastName,
+    FilesListParam,
+    FilterParam,
+    IncludeTotalCount,
+    LimitChats,
+    LimitMessages,
+    MaxDate,
+    MessageBody,
+    MessageIdInChat,
+    MessageIds,
+    MethodFullName,
+    MinDate,
+    ParamsJson,
+    ParseMode,
+    PhoneE164,
+    PublicFilter,
+    QueryFindChats,
+    QueryGlobal,
+    QueryInChat,
+    RemoveIfNew,
+    ReplyToForThread,
+    ReplyToId,
+    ReplyToMsgId,
+    ResolveEntities,
+    ThreadScope,
+    TopicsLimit,
+)
+from src.server_components.session_acl import enforce_session_acl
+from src.telemetry import metrics
+from src.tools.chat_discovery.chat_info import get_chat_info_impl
+from src.tools.chat_discovery.find_chats import find_chats_impl
+from src.tools.external import get_yandex_disk_content_impl
+from src.tools.messages import (
+    edit_message_impl,
+    get_media_content_impl,
+    send_message_impl,
+    send_message_to_phone_impl,
+    send_rich_message_impl,
+)
+from src.tools.mtproto import invoke_mtproto_impl
+from src.tools.search import search_messages_impl
+
+# Canonical absolute URL for Tools-Reference (appended to each MCP tool description).
+TOOLS_REFERENCE_DOC_URL = "https://github.com/leshchenko1979/fast-mcp-telegram/blob/main/docs/Tools-Reference.md"
+
+# MCP-visible tool descriptions (short; full examples at TOOLS_REFERENCE_DOC_URL).
+
+
+def _tool_description(body: str, *, extra: str = "") -> str:
+    return body + extra + f" Full documentation: {TOOLS_REFERENCE_DOC_URL}"
+
+
+_DESC_SEARCH_GLOBAL = _tool_description(
+    "Search all Telegram chats at once (not scoped to one chat). "
+    "Comma-separated query terms; optional filters by date, chat kind, and public username. "
+    "Success: message list and metadata dict. ",
+    extra="Global search ignores include_total_count.",
+)
+
+_DESC_GET_MESSAGES = _tool_description(
+    "Read chat history: the conversation, dialog, or DM with one person, group, or channel. "
+    "Browse the latest messages, search text inside the chat, fetch by ids, "
+    "or load replies to a message (comments, forum topics, threads). "
+    "Accepts a @username directly as chat_id, so a known handle needs no lookup step. "
+    "Filter a time window with min_date and max_date (e.g. what was written this morning). "
+    "Do not combine message_ids with query or reply_to_id. "
+    "Success: messages, has_more, optional total_count and discussion fields. "
+)
+
+_DESC_GET_MEDIA_CONTENT = _tool_description(
+    "Fetch photos/images from specific messages and return them INLINE as native "
+    "image content (base64), so web clients can read screenshots without fetching a "
+    "URL. Non-image files return a short text note plus their download URL; voice / "
+    "round video return a note pointing at get_messages field `transcription`. "
+    "Limits: max 6 images per call; originals over 5 MB are skipped with a note. "
+)
+
+_DESC_GET_YADISK = _tool_description(
+    "Open a public Yandex.Disk link (folder or file) sent in Telegram and return "
+    "its images INLINE as native image content (base64), recursing into subfolders. "
+    "Non-image files return a short note plus a preview/download URL. Use when a chat "
+    "message contains a disk.yandex / yadi.sk link and the user wants to see what is "
+    "in it. Max 12 images per call. "
+)
+
+_DESC_SEND_MESSAGE = _tool_description(
+    "Send text and optional attachments to a chat. Success: send result dict. "
+    "Each item in `files` may be a public URL, a server-local path, OR a base64 "
+    "data URI (data:<mime>;base64,<payload>) — use the data URI form to send a "
+    "file the caller has in memory or attached locally, without needing a public "
+    "link (supported up to ~30 MB). "
+)
+
+_DESC_EDIT_MESSAGE = _tool_description(
+    "Replace text of an existing message you can edit in this chat. Success: edit result dict. "
+)
+
+_DESC_SEND_RICH_MESSAGE = _tool_description(
+    "Send markdown as a Telegram Rich Message with REAL tables and headings "
+    "(Bot API 10.1 sendRichMessage). Use this instead of send_message when the "
+    "content has markdown tables (| ... |), headings (#), or structured report "
+    "layout that should render natively in Telegram. Sent by the separately "
+    "configured bot, so chat_id must identify a chat shared with that bot, "
+    "NOT 'me'/Saved Messages. Success: {sent, id, chat_id, type}. "
+)
+
+_DESC_FIND_CHATS = _tool_description(
+    "Find users/groups/channels by name, username, or phone. "
+    "Global search (query required) searches all Telegram; "
+    "with min_date, max_date, or filter, search uses dialog list or a named filter; "
+    "include_peers filters use last-activity from GetPeerDialogs; flag-based filters use dialog list dates. "
+    "Success: dict with key chats (list of chat objects). "
+)
+
+_DESC_GET_CHAT_INFO = _tool_description(
+    "Load profile and metadata for one user, bot, group, or channel. "
+    "Success: info dict; forum chats may include topics up to topics_limit. "
+)
+
+_DESC_SEND_PHONE = _tool_description(
+    "Send to a phone number: may create a temporary contact, then send text or files. "
+    "Success: send result plus contact_was_new / contact_removed when applicable. "
+)
+
+_DESC_INVOKE_MTPROTO = _tool_description(
+    "Low-level Telegram API (MTProto) invoke for methods not wrapped by other tools. "
+    "Dangerous methods require allow_dangerous=true. "
+    "Success: API result dict or normalized error. "
+)
+
+
+def _matches_default(value: Any, default: Any) -> bool:
+    """Best-effort: is *value* the simple scalar default?
+
+    Only compares well-defined immutable types (None, bool, int, float, str,
+    bytes).  Anything else (lists, dicts, objects) is treated as explicitly
+    provided — conservative but safe.
+    """
+    if isinstance(default, (type(None), bool, int, float, str, bytes)):
+        return value == default
+    return False
+
+
+# --- Per-tool wall-clock budgets, seconds (improvement #322 server watchdog) ---
+# None = no timeout: long media/download tools must never be cut.
+# Runtime override without code edits: env TOOL_TIMEOUTS_JSON='{"tool": seconds|null}'.
+DEFAULT_TOOL_TIMEOUT = 90.0
+TOOL_TIMEOUTS: dict[str, float | None] = {
+    "find_chats": 60.0,
+    "get_media_content": None,
+    "get_yandex_disk_content": None,
+    "invoke_mtproto": 120.0,
+}
+with contextlib.suppress(Exception):
+    TOOL_TIMEOUTS.update(
+        {
+            k: (None if v is None else float(v))
+            for k, v in json.loads(
+                os.environ.get("TOOL_TIMEOUTS_JSON", "") or "{}"
+            ).items()
+        }
+    )
+
+
+def mcp_tool_with_restrictions(
+    operation_name: str, *, allow_bot_sessions: bool = False
+):
+    """
+    Combined decorator for MCP tools: error handling, ACL, auth context, bot restrictions.
+
+    Call order (outer → inner): bot → auth → error → ACL → func.
+    Auth must run before ACL so get_request_token() is set for pre-checks.
+    ACL wraps the original tool function so signature-based checks remain robust.
+
+    Args:
+        operation_name: Name of the operation for error reporting and bot restrictions
+        allow_bot_sessions: When True, skip bot restriction (for MTProto bridge tools)
+    """
+
+    def decorator(func):
+        """Wrap tool call with per-tool timing, parameter-set breakdown, and error traces."""
+
+        # Pre-compute parameter defaults from function signature
+        # so _telemetry_wrapper can skip framework-filled defaults
+        # and only track params the caller explicitly provided.
+        #
+        # This relies on Pydantic/MCP always calling tools with fully-populated
+        # keyword arguments (all declared params, defaults filled in for missing
+        # ones). Params whose values match their signature defaults are treated
+        # as likely framework-filled and excluded from the param set key.
+        # If the argument-passing mechanism changes (e.g. to positional-only
+        # or partial kwargs), this logic must be revisited.
+        _sig = inspect.signature(func)
+        _param_defaults = {
+            name: param.default
+            for name, param in _sig.parameters.items()
+            if param.default is not param.empty
+        }
+
+        @functools.wraps(func)
+        async def _telemetry_wrapper(*args, **kwargs):
+            # Telemetry layer must never break tool execution.
+            # Assume MCP/Pydantic always calls tools with fully-populated keyword args.
+            # Only track params that differ from their signature defaults.
+            param_keys = frozenset(
+                name
+                for name, value in kwargs.items()
+                if name not in _param_defaults
+                or not _matches_default(value, _param_defaults[name])
+            )
+            t0 = time.perf_counter()
+            error: str | None = None
+            _budget = TOOL_TIMEOUTS.get(operation_name, DEFAULT_TOOL_TIMEOUT)
+            try:
+                try:
+                    if _budget is None:
+                        result = await func(*args, **kwargs)
+                    else:
+                        result = await asyncio.wait_for(
+                            func(*args, **kwargs), timeout=_budget
+                        )
+                except TimeoutError:
+                    error = f"TOOL_TIMEOUT after {_budget}s"
+                    raise RuntimeError(
+                        f"TOOL_TIMEOUT: {operation_name} exceeded server budget "
+                        f"{_budget:.0f}s. Do not retry blindly; inspect service health and "
+                        f"logs before choosing the next action."
+                    ) from None
+                except Exception:
+                    error = traceback.format_exc()
+                    raise
+                if isinstance(result, dict) and result.get("ok") is False:
+                    error = str(result.get("error", ""))
+                return result
+            finally:
+                metrics.record_tool_call(
+                    tool=operation_name,
+                    params=param_keys,
+                    duration_ms=(time.perf_counter() - t0) * 1000,
+                    error=error,
+                )
+
+        decorated_func = _telemetry_wrapper
+        decorated_func = enforce_session_acl(operation_name)(decorated_func)
+        decorated_func = server_errors.with_error_handling(operation_name)(
+            decorated_func
+        )
+        decorated_func = server_auth.require_auth(decorated_func)
+        if allow_bot_sessions:
+            return decorated_func
+        return bot_restrictions.restrict_non_bridge_for_bot_sessions(operation_name)(
+            decorated_func
+        )
+
+    return decorator
+
+
+def register_tools(mcp: FastMCP) -> None:
+    @mcp.tool(
+        description=_DESC_SEARCH_GLOBAL,
+        annotations=ToolAnnotations(
+            title="Search messages globally",
+            readOnlyHint=True,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+    )
+    @mcp_tool_with_restrictions("search_messages_globally")
+    async def search_messages_globally(
+        query: QueryGlobal,
+        limit: LimitMessages = 50,
+        min_date: MinDate = None,
+        max_date: MaxDate = None,
+        chat_type: ChatTypeComma = None,
+        public: PublicFilter = None,
+        auto_expand_batches: AutoExpandBatches = 2,
+        include_total_count: IncludeTotalCount = False,
+    ) -> dict[str, Any]:
+        """Global Telegram message search (full doc URL is in the MCP tool description)."""
+        return await search_messages_impl(
+            query=query,
+            chat_id=None,
+            limit=limit,
+            min_date=min_date,
+            max_date=max_date,
+            chat_type=chat_type,
+            public=public,
+            auto_expand_batches=auto_expand_batches,
+            include_total_count=include_total_count,
+        )
+
+    @mcp.tool(
+        description=_DESC_GET_MESSAGES,
+        annotations=ToolAnnotations(
+            title="Get messages in chat",
+            readOnlyHint=True,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+    )
+    @mcp_tool_with_restrictions("get_messages")
+    async def get_messages(
+        chat_id: ChatId,
+        query: QueryInChat = None,
+        message_ids: MessageIds = None,
+        reply_to_id: ReplyToForThread = None,
+        thread_scope: ThreadScope = "auto",
+        limit: LimitMessages = 50,
+        min_date: MinDate = None,
+        max_date: MaxDate = None,
+        auto_expand_batches: AutoExpandBatches = 2,
+        include_total_count: IncludeTotalCount = False,
+    ) -> dict[str, Any]:
+        """Browse, search, fetch by ids, or load replies in one chat (full doc URL in tool description)."""
+        return await search_messages_impl(
+            query=query,
+            chat_id=chat_id,
+            message_ids=message_ids,
+            reply_to_id=reply_to_id,
+            limit=limit,
+            min_date=min_date,
+            max_date=max_date,
+            chat_type=None,
+            auto_expand_batches=auto_expand_batches,
+            include_total_count=include_total_count,
+            thread_scope=thread_scope,
+        )
+
+    @mcp.tool(
+        description=_DESC_GET_MEDIA_CONTENT,
+        # This tool returns native content blocks (text + inline images), not a
+        # structured object. Disable output-schema inference so FastMCP does not
+        # demand structured_content and reject the content-only result.
+        output_schema=None,
+        annotations=ToolAnnotations(
+            title="Get media content inline",
+            readOnlyHint=True,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+    )
+    @mcp_tool_with_restrictions("get_media_content")
+    async def get_media_content(
+        chat_id: ChatId,
+        message_ids: MessageIds,
+    ) -> list[Any]:
+        """Return image bytes inline for given messages (full doc URL in tool description)."""
+        return await get_media_content_impl(chat_id, message_ids)
+
+    @mcp.tool(
+        description=_DESC_GET_YADISK,
+        # Returns native content blocks (text + inline images), not a structured
+        # object — disable output-schema inference (see get_media_content).
+        output_schema=None,
+        annotations=ToolAnnotations(
+            title="Get Yandex.Disk content inline",
+            readOnlyHint=True,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+    )
+    @mcp_tool_with_restrictions("get_yandex_disk_content")
+    async def get_yandex_disk_content(
+        public_url: str,
+        path: str | None = None,
+    ) -> list[Any]:
+        """Open a public Yandex.Disk link and inline its images (full doc URL in tool description)."""
+        return await get_yandex_disk_content_impl(public_url, path)
+
+    @mcp.tool(
+        description=_DESC_SEND_MESSAGE,
+        annotations=ToolAnnotations(
+            title="Send message",
+            destructiveHint=True,
+            openWorldHint=True,
+        ),
+    )
+    @mcp_tool_with_restrictions("send_message")
+    async def send_message(
+        chat_id: ChatId,
+        message: MessageBody,
+        reply_to_id: ReplyToId = None,
+        parse_mode: ParseMode = "auto",
+        files: FilesListParam = None,
+    ) -> dict[str, Any]:
+        """Send text or media to a chat (full doc URL in tool description)."""
+        return await send_message_impl(chat_id, message, reply_to_id, parse_mode, files)
+
+    @mcp.tool(
+        description=_DESC_EDIT_MESSAGE,
+        annotations=ToolAnnotations(
+            title="Edit message",
+            destructiveHint=True,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+    )
+    @mcp_tool_with_restrictions("edit_message")
+    async def edit_message(
+        chat_id: ChatId,
+        message_id: MessageIdInChat,
+        message: MessageBody,
+        parse_mode: ParseMode = "auto",
+    ) -> dict[str, Any]:
+        """Edit an existing message (full doc URL in tool description)."""
+        return await edit_message_impl(
+            chat_id,
+            message_id,
+            message,
+            parse_mode,
+        )
+
+    @mcp.tool(
+        description=_DESC_FIND_CHATS,
+        annotations=ToolAnnotations(
+            title="Find chats",
+            readOnlyHint=True,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+    )
+    @mcp_tool_with_restrictions("find_chats")
+    async def find_chats(
+        query: QueryFindChats = None,
+        limit: LimitChats = 20,
+        chat_type: ChatTypeComma = None,
+        public: PublicFilter = None,
+        min_date: MinDate = None,
+        max_date: MaxDate = None,
+        folder: FilterParam = None,
+    ) -> dict[str, Any]:
+        """Find chats by query, folder, or activity dates (full doc URL in tool description)."""
+        return await find_chats_impl(
+            query, limit, chat_type, public, min_date, max_date, folder
+        )
+
+    @mcp.tool(
+        description=_DESC_GET_CHAT_INFO,
+        annotations=ToolAnnotations(
+            title="Get chat info",
+            readOnlyHint=True,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+    )
+    @mcp_tool_with_restrictions("get_chat_info")
+    async def get_chat_info(
+        chat_id: ChatId, topics_limit: TopicsLimit = 20
+    ) -> dict[str, Any]:
+        """Profile and metadata for one chat or user (full doc URL in tool description)."""
+        return await get_chat_info_impl(chat_id, topics_limit=topics_limit)
+
+    @mcp.tool(
+        description=_DESC_SEND_PHONE,
+        annotations=ToolAnnotations(
+            title="Send message to phone",
+            destructiveHint=True,
+            openWorldHint=True,
+        ),
+    )
+    @mcp_tool_with_restrictions("send_message_to_phone")
+    async def send_message_to_phone(
+        phone_number: PhoneE164,
+        message: MessageBody,
+        first_name: ContactFirstName = "Contact",
+        last_name: ContactLastName = "Name",
+        remove_if_new: RemoveIfNew = False,
+        reply_to_msg_id: ReplyToMsgId = None,
+        parse_mode: ParseMode = "auto",
+        files: FilesListParam = None,
+    ) -> dict[str, Any]:
+        """Send to a phone number with optional contact auto-create (full doc URL in tool description)."""
+        return await send_message_to_phone_impl(
+            phone_number=phone_number,
+            message=message,
+            first_name=first_name,
+            last_name=last_name,
+            remove_if_new=remove_if_new,
+            reply_to_msg_id=reply_to_msg_id,
+            parse_mode=parse_mode,
+            files=files,
+        )
+
+    @mcp.tool(
+        description=_DESC_SEND_RICH_MESSAGE,
+        annotations=ToolAnnotations(
+            title="Send rich message",
+            destructiveHint=True,
+            openWorldHint=True,
+        ),
+    )
+    @mcp_tool_with_restrictions("send_rich_message")
+    async def send_rich_message(
+        chat_id: ChatId,
+        markdown: MessageBody,
+        reply_to_id: ReplyToId = None,
+    ) -> dict[str, Any]:
+        """Send markdown as a rich message with tables/headings (full doc URL in tool description)."""
+        return await send_rich_message_impl(chat_id, markdown, reply_to_id)
+
+    if cfg().enable_raw_mtproto:
+
+        @mcp.tool(
+            description=_DESC_INVOKE_MTPROTO,
+            annotations=ToolAnnotations(
+                title="Invoke MTProto",
+                destructiveHint=True,
+                openWorldHint=True,
+            ),
+        )
+        @mcp_tool_with_restrictions("invoke_mtproto", allow_bot_sessions=True)
+        async def invoke_mtproto(
+            method_full_name: MethodFullName,
+            params_json: ParamsJson,
+            allow_dangerous: AllowDangerous = False,
+            resolve: ResolveEntities = True,
+        ) -> dict[str, Any]:
+            """Raw Telegram API invoke, advanced (full doc URL in tool description)."""
+            return await invoke_mtproto_impl(
+                method_full_name=method_full_name,
+                params_json=params_json,
+                allow_dangerous=allow_dangerous,
+                resolve=resolve,
+            )

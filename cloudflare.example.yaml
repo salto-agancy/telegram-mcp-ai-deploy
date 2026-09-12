@@ -1,0 +1,20 @@
+# Illustrative desired state. The installer reads .env and provisions this through the API.
+schema_version: 1
+account_id: REPLACE_WITH_CLOUDFLARE_ACCOUNT_ID
+hostname: telegram-mcp.example.com
+tunnel:
+  name: telegram-mcp
+  type: remotely-managed
+ingress:
+  - path: /v1/mcp
+    service: http://telegram-mcp:8000
+    authentication: bearer
+  - path: /v1/attachments/*
+    service: http://telegram-mcp:8000
+    authentication: single-use-ticket
+  - service: http://oauth-proxy:8001
+    authentication: oauth
+  - service: http_status:404
+dns:
+  proxied: true
+  record_type: CNAME

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/salto-agancy/telegram-mcp-ai-deploy/security/advisories/new
+    about: Report vulnerabilities and accidental credential exposure privately.
+  - name: Questions and ideas
+    url: https://github.com/salto-agancy/telegram-mcp-ai-deploy/discussions
+    about: Ask usage questions or discuss an idea before opening an Issue.

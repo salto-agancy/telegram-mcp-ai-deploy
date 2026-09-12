@@ -1,0 +1,132 @@
+name: telegram-mcp
+
+x-app: &app
+  build:
+    context: .
+    args:
+      PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.13-alpine}
+  image: ${TELEGRAM_MCP_IMAGE:-telegram-mcp:local}
+  env_file:
+    - path: ./.env
+      required: true
+    - path: ./.runtime.env
+      required: true
+  networks: [mcp-private]
+  restart: unless-stopped
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
+  cap_drop: [ALL]
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+services:
+  telegram-mcp:
+    <<: *app
+    environment:
+      SERVER_MODE: http-auth
+      HOST: 0.0.0.0
+      PORT: 8000
+      SESSION_DIR: /data/sessions
+      ACL_ENABLED: "true"
+      ACL_CONFIG_PATH: /run/secrets/acl.yaml
+      ACL_DENY_UNLISTED_PRINCIPALS: "true"
+      ENABLE_RAW_MTPROTO: ${ENABLE_RAW_MTPROTO:-false}
+      ATTACHMENT_TICKET_TTL_SECONDS: ${ATTACHMENT_TICKET_TTL_SECONDS:-300}
+      DO_NOT_TRACK: "1"
+    volumes:
+      - telegram-sessions:/data/sessions
+      - ./secrets/acl.yaml:/run/secrets/acl.yaml:ro
+    command: python -m src.server
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      start_period: 30s
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  oauth-proxy:
+    <<: *app
+    depends_on:
+      telegram-mcp:
+        condition: service_healthy
+    environment:
+      PUBLIC_BASE_URL: https://${MCP_HOSTNAME}
+      BACKEND_URL: http://telegram-mcp:8000/v1/mcp
+      BACKEND_BEARER_FILE: /run/secrets/backend_bearer
+      MCP_OAUTH_CLIENT_ID_FILE: /run/secrets/oauth_client_id
+      MCP_OAUTH_CLIENT_SECRET_FILE: /run/secrets/oauth_client_secret
+      MCP_OAUTH_REDIRECT_URIS: ${MCP_OAUTH_REDIRECT_URIS:-https://claude.ai/api/mcp/auth_callback,https://claude.com/api/mcp/auth_callback}
+      OAUTH_DB_PATH: /data/oauth.db
+      BIND_HOST: 0.0.0.0
+      BIND_PORT: 8001
+      MCP_PATH: /mcp
+    volumes:
+      - oauth-data:/data
+      - ./secrets/backend_bearer:/run/secrets/backend_bearer:ro
+      - ./secrets/oauth_client_id:/run/secrets/oauth_client_id:ro
+      - ./secrets/oauth_client_secret:/run/secrets/oauth_client_secret:ro
+    command: python -m src.oauth_proxy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8001/.well-known/oauth-authorization-server', timeout=3); assert r.status == 200"]
+      start_period: 30s
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  cloudflared:
+    image: ${CLOUDFLARED_IMAGE:-cloudflare/cloudflared:latest}
+    depends_on:
+      oauth-proxy:
+        condition: service_healthy
+    networks: [mcp-private, tunnel-egress]
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./secrets/cloudflared_token:/run/secrets/cloudflared_token:ro
+    command: tunnel --no-autoupdate run --token-file /run/secrets/cloudflared_token
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  setup:
+    <<: *app
+    profiles: [setup]
+    restart: "no"
+    read_only: false
+    stdin_open: true
+    tty: true
+    environment:
+      SERVER_MODE: http-auth
+      SESSION_DIR: /data/sessions
+    volumes:
+      - telegram-sessions:/data/sessions
+      - ./secrets:/run/secrets
+    command:
+      - python
+      - -m
+      - src.cli_setup
+      - --overwrite
+      - --bearer-token-output-file
+      - /run/secrets/backend_bearer
+
+volumes:
+  telegram-sessions:
+  oauth-data:
+
+networks:
+  mcp-private:
+    internal: true
+  tunnel-egress:

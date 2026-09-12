@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+
+{% block content %}
+<main id="step">
+    <h1>Telegram MCP Setup</h1>
+    <p class="muted">Choose how to set up your Telegram session.</p>
+
+    <div id="setup-toolbar" class="option-buttons" role="group" aria-label="Setup options">
+        <button type="button" data-form="new-session" aria-expanded="false" aria-controls="new-session-form">
+            Create New Session
+        </button>
+        <button type="button" data-form="reauthorize" aria-expanded="false" aria-controls="reauthorize-form">
+            Reauthorize Existing Session
+        </button>
+        <button type="button" data-form="delete-session" aria-expanded="false" aria-controls="delete-session-form">
+            Delete Session
+        </button>
+    </div>
+
+    <div id="setup-flow" aria-live="polite">
+        <section id="new-session-form" class="setup-form" hidden aria-labelledby="new-session-heading">
+            {% include "fragments/new_session_phone_form_body.html" %}
+        </section>
+
+        <section id="reauthorize-form" class="setup-form" hidden aria-labelledby="reauthorize-heading">
+            {% include "fragments/reauthorize_token_form_body.html" %}
+        </section>
+
+        <section id="delete-session-form" class="setup-form" hidden aria-labelledby="delete-session-heading">
+            {% include "fragments/delete_form_body.html" %}
+        </section>
+    </div>
+</main>
+
+<style>
+    #step>h1 {
+        margin-bottom: 8px;
+    }
+
+    .setup-form {
+        margin-top: 1.5rem;
+    }
+
+    #setup-flow {
+        margin-top: 1rem;
+    }
+
+    .option-buttons {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        margin-top: 12px;
+        margin-bottom: 16px;
+    }
+
+    /* Enhanced button interactions */
+    .option-buttons button {
+        position: relative;
+        transition: all 0.2s ease;
+        border: 2px solid transparent;
+        margin-top: 0;
+    }
+
+    .option-buttons button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    }
+
+    .option-buttons button:focus {
+        outline: 2px solid #4f46e5;
+        outline-offset: 2px;
+    }
+
+    .option-buttons button[aria-expanded="true"] {
+        border-color: #4f46e5;
+        background: #1e293b;
+    }
+
+    /* Responsive design improvements */
+    @media (max-width: 640px) {
+        .option-buttons {
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .option-buttons button {
+            padding: 0.875rem;
+            font-size: 1rem;
+        }
+    }
+</style>
+
+<script>
+    (function () {
+        'use strict';
+
+        const BRANCH_IDS = ['new-session', 'reauthorize', 'delete-session'];
+
+        /** True when initial three sections are still in the DOM (HTMX has not replaced the shell). */
+        function setupShellIntact() {
+            return BRANCH_IDS.every((name) => document.getElementById(name + '-form'));
+        }
+
+        function showForm(formName) {
+            if (!BRANCH_IDS.includes(formName)) {
+                return;
+            }
+
+            // After HTMX swaps #setup-flow, branch sections may be missing. Reload with ?branch= so
+            // the full shell is restored and the chosen branch opens (avoid hiding the only visible block first).
+            if (!setupShellIntact()) {
+                const u = new URL('/setup', window.location.origin);
+                u.searchParams.set('branch', formName);
+                window.location.assign(u.pathname + u.search);
+                return;
+            }
+
+            BRANCH_IDS.forEach((name) => {
+                const form = document.getElementById(name + '-form');
+                const button = document.querySelector('[data-form="' + name + '"]');
+                if (name === formName) {
+                    form.hidden = false;
+                    button?.setAttribute('aria-expanded', 'true');
+                } else {
+                    form.hidden = true;
+                    button?.setAttribute('aria-expanded', 'false');
+                }
+            });
+        }
+
+        document.addEventListener('click', function (e) {
+            const button = e.target.closest('[data-form]');
+            if (button) {
+                e.preventDefault();
+                showForm(button.dataset.form);
+            }
+        });
+
+        document.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter' || e.key === ' ') {
+                const button = e.target.closest('[data-form]');
+                if (button) {
+                    e.preventDefault();
+                    showForm(button.dataset.form);
+                }
+            }
+        });
+
+        document.addEventListener('DOMContentLoaded', function () {
+            const params = new URLSearchParams(window.location.search);
+            const branch = params.get('branch');
+            if (branch && BRANCH_IDS.includes(branch)) {
+                showForm(branch);
+                if (window.history.replaceState) {
+                    window.history.replaceState({}, '', '/setup');
+                }
+            }
+        });
+
+    })();
+</script>
+{% endblock %}

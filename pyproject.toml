@@ -1,0 +1,144 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fast-mcp-telegram"
+version = "0.34.0"
+description = "AI-deployable Telegram gateway with 10 safe-by-default tools and an opt-in raw MTProto bridge"
+authors = [{name = "Alexey Leshchenko and contributors"}]
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Communications :: Chat",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "fastmcp-slim[server]>=3.3",
+    "telethon",
+    "TelethonFakeTLS",  # For fake TLS (EE prefix) MTProto proxy support
+    "jinja2",
+    "pydantic-settings",
+    "pyyaml",
+    "qrcode[pil]",
+]
+
+[project.urls]
+Homepage = "https://github.com/salto-agancy/telegram-mcp-ai-deploy"
+Repository = "https://github.com/salto-agancy/telegram-mcp-ai-deploy"
+Documentation = "https://github.com/salto-agancy/telegram-mcp-ai-deploy#readme"
+Issues = "https://github.com/salto-agancy/telegram-mcp-ai-deploy/issues"
+
+[project.scripts]
+fast-mcp-telegram = "src.server:main"
+fast-mcp-telegram-setup = "src.cli_setup:sync_main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.md"]
+
+[tool.ty.src]
+# Type-check source code only; tests use mocks and intentional loose typing
+include = ["src"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+    "N",   # pep8-naming
+    "PIE", # flake8-pie
+    "SIM", # flake8-simplify
+    "RET", # flake8-return
+    "RUF", # ruff-specific rules
+]
+ignore = [
+    "E501",  # line too long
+    "B008",  # do not perform function calls in argument defaults
+    "C901",  # too complex
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[dependency-groups]
+dev = [
+    "ruff",
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "pytest-xdist",
+    "pytest-html",
+    "sourcery",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--tb=short",
+    "--asyncio-mode=auto",
+    "--strict-markers",
+    "--disable-warnings",
+]
+markers = [
+    "asyncio: marks tests as async (using pytest-asyncio)",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
+
+[tool.coverage.run]
+source = ["src"]
+omit = [
+    "*/tests/*",
+    "*/test_*.py",
+    "*/conftest.py",
+    "*/__init__.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug:",
+    "if settings.DEBUG",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if 0:",
+    "if __name__ == .__main__.:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "telegram": {
+      "type": "http",
+      "url": "https://telegram-mcp.example.com/v1/mcp",
+      "headers": {
+        "Authorization": "Bearer ${TELEGRAM_MCP_BEARER}"
+      }
+    }
+  }
+}

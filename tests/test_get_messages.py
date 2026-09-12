@@ -1,0 +1,835 @@
+"""
+Tests for the unified get_messages tool and its various modes.
+
+Tests cover:
+- Parameter conflict validation
+- Mode-specific functionality (search, browse, read by IDs, replies)
+- Empty parameter edge cases
+- Error handling for all modes
+"""
+
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
+
+import pytest
+
+from src.tools.search import search_messages_impl
+from tests.conftest import make_mock_message
+
+
+class TestGetMessagesParameterConflicts:
+    """Test parameter conflict validation."""
+
+    @pytest.mark.asyncio
+    async def test_message_ids_and_reply_to_id_conflict(self):
+        """Should reject message_ids + reply_to_id combination."""
+        result = await search_messages_impl(
+            chat_id="me",
+            message_ids=[1, 2, 3],
+            reply_to_id=100,
+        )
+
+        assert "error" in result
+        assert "Cannot combine message_ids with reply_to_id" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_message_ids_and_query_conflict(self):
+        """Should reject message_ids + query combination."""
+        result = await search_messages_impl(
+            chat_id="me",
+            message_ids=[1, 2, 3],
+            query="test",
+        )
+
+        assert "error" in result
+        assert "Cannot combine message_ids with query" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_message_ids_requires_chat_id(self):
+        """Should require chat_id when using message_ids."""
+        result = await search_messages_impl(
+            message_ids=[1, 2, 3],
+        )
+
+        assert "error" in result
+        assert "chat_id is required" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_reply_to_id_requires_chat_id(self):
+        """Should require chat_id when using reply_to_id."""
+        result = await search_messages_impl(
+            reply_to_id=100,
+        )
+
+        assert "error" in result
+        assert "chat_id is required" in result["error"]
+
+
+class TestGetMessagesReadByIds:
+    """Test read by message IDs mode."""
+
+    @pytest.mark.asyncio
+    @patch("src.tools.search.core.read_messages_by_ids", new_callable=AsyncMock)
+    async def test_delegates_to_read_messages_by_ids(self, mock_read):
+        """Should delegate to read_messages_by_ids when message_ids provided."""
+        mock_read.return_value = [
+            {"id": 1, "text": "Message 1"},
+            {"id": 2, "text": "Message 2"},
+        ]
+
+        result = await search_messages_impl(
+            chat_id="me",
+            message_ids=[1, 2],
+        )
+
+        mock_read.assert_called_once_with("me", [1, 2])
+        assert isinstance(result, dict)
+        assert "messages" in result
+        assert "has_more" in result
+        assert len(result["messages"]) == 2
+        assert result["has_more"] is False
+
+    @pytest.mark.asyncio
+    @patch("src.tools.search.core.read_messages_by_ids", new_callable=AsyncMock)
+    async def test_message_ids_rejects_date_filters(self, mock_read):
+        """Should reject date filters when using message_ids."""
+        mock_read.return_value = [{"id": 1, "text": "Message"}]
+
+        result = await search_messages_impl(
+            chat_id="me",
+            message_ids=[1],
+            limit=100,
+            min_date="2024-01-01",
+        )
+
+        assert "error" in result
+        assert "not supported for message_ids mode" in result["error"]
+
+    @pytest.mark.asyncio
+    @patch("src.tools.search.core.read_messages_by_ids", new_callable=AsyncMock)
+    async def test_returns_error_when_read_messages_by_ids_returns_error(
+        self, mock_read
+    ):
+        """Should return raw error dict when read_messages_by_ids returns error."""
+        mock_read.return_value = [{"error": "Message not found", "ok": False}]
+
+        result = await search_messages_impl(
+            chat_id="me",
+            message_ids=[999],
+        )
+
+        mock_read.assert_called_once_with("me", [999])
+        assert isinstance(result, dict)
+        assert "error" in result
+        assert result["error"] == "Message not found"
+        assert result["ok"] is False
+        # Should NOT be wrapped in {"messages": ...}
+        assert "messages" not in result
+
+
+class TestGetMessagesReplies:
+    """Test replies mode (post comments, forum topics, message replies)."""
+
+    @pytest.mark.asyncio
+    @patch("src.tools.search.core._handle_reply_mode", new_callable=AsyncMock)
+    async def test_fetches_replies(self, mock_handler):
+        """Should delegate to replies handler when reply_to_id provided."""
+        mock_handler.return_value = {
+            "messages": [
+                {"id": 1, "text": "Reply 1"},
+                {"id": 2, "text": "Reply 2"},
+            ],
+            "has_more": False,
+            "reply_to_id": 100,
+        }
+
+        result = await search_messages_impl(
+            chat_id="-1001111111111",
+            reply_to_id=100,
+            limit=50,
+        )
+
+        # Verify handler was called correctly
+        mock_handler.assert_called_once()
+        call_args = mock_handler.call_args
+        assert call_args[0][0] == "-1001111111111"  # chat_id
+        assert call_args[0][1] == 100  # reply_to_id
+        assert call_args[0][2] == 50  # limit
+        assert call_args[0][3] is None  # query
+
+        # Verify response structure
+        assert "messages" in result
+        assert "has_more" in result
+        assert "reply_to_id" in result
+        assert len(result["messages"]) == 2
+
+    @pytest.mark.asyncio
+    @patch("src.tools.search.core._handle_reply_mode", new_callable=AsyncMock)
+    async def test_search_in_replies(self, mock_handler):
+        """Should pass query to handler when both reply_to_id and query provided."""
+        mock_handler.return_value = {
+            "messages": [{"id": 1, "text": "Bug report"}],
+            "has_more": False,
+            "reply_to_id": 100,
+        }
+
+        result = await search_messages_impl(
+            chat_id="-1001111111111",
+            reply_to_id=100,
+            query="bug",
+            limit=20,
+        )
+
+        # Verify query was passed
+        call_args = mock_handler.call_args
+        assert call_args[0][3] == "bug"  # query
+        assert len(result["messages"]) == 1
+
+    @pytest.mark.asyncio
+    @patch("src.tools.search.core._handle_reply_mode", new_callable=AsyncMock)
+    async def test_no_replies_error(self, mock_handler):
+        """Should return error when no replies found."""
+        mock_handler.return_value = {
+            "error": "No replies found for message 100",
+            "ok": False,
+        }
+
+        result = await search_messages_impl(
+            chat_id="-1001111111111",
+            reply_to_id=100,
+        )
+
+        assert "error" in result
+
+    @pytest.mark.asyncio
+    async def test_invalid_chat_for_replies(self):
+        """Should return error when chat_id missing for reply_to_id."""
+        result = await search_messages_impl(
+            reply_to_id=100,
+        )
+
+        assert "error" in result
+        assert "chat_id is required" in result["error"]
+
+    @pytest.mark.asyncio
+    @patch("src.tools.search.core._handle_reply_mode", new_callable=AsyncMock)
+    async def test_replies_accepts_min_date(self, mock_handler):
+        """Should pass min_date to handler without error."""
+        mock_handler.return_value = {
+            "messages": [{"id": 1, "text": "Reply"}],
+            "has_more": False,
+            "reply_to_id": 100,
+        }
+
+        result = await search_messages_impl(
+            chat_id="-1001111111111",
+            reply_to_id=100,
+            min_date="2024-01-01",
+            limit=50,
+        )
+
+        assert "error" not in result
+        mock_handler.assert_called_once()
+        assert mock_handler.call_args[1]["min_date"] == "2024-01-01"
+
+    @pytest.mark.asyncio
+    @patch("src.tools.search.core._handle_reply_mode", new_callable=AsyncMock)
+    async def test_replies_accepts_max_date(self, mock_handler):
+        """Should pass max_date to handler without error."""
+        mock_handler.return_value = {
+            "messages": [{"id": 1, "text": "Reply"}],
+            "has_more": False,
+            "reply_to_id": 100,
+        }
+
+        result = await search_messages_impl(
+            chat_id="-1001111111111",
+            reply_to_id=100,
+            max_date="2024-12-31",
+            limit=50,
+        )
+
+        assert "error" not in result
+        mock_handler.assert_called_once()
+        assert mock_handler.call_args[1]["max_date"] == "2024-12-31"
+
+    @pytest.mark.asyncio
+    @patch("src.tools.search.core._handle_reply_mode", new_callable=AsyncMock)
+    async def test_replies_accepts_date_range(self, mock_handler):
+        """Should pass both min_date and max_date to handler without error."""
+        mock_handler.return_value = {
+            "messages": [{"id": 1, "text": "Reply"}],
+            "has_more": False,
+            "reply_to_id": 100,
+        }
+
+        result = await search_messages_impl(
+            chat_id="-1001111111111",
+            reply_to_id=100,
+            min_date="2024-01-01",
+            max_date="2024-12-31",
+            limit=50,
+        )
+
+        assert "error" not in result
+        mock_handler.assert_called_once()
+        assert mock_handler.call_args[1]["min_date"] == "2024-01-01"
+        assert mock_handler.call_args[1]["max_date"] == "2024-12-31"
+
+
+class TestGetMessagesRepliesErrors:
+    """Error paths for replies mode."""
+
+    @pytest.mark.asyncio
+    @patch("src.tools.search.replies.get_connected_client", new_callable=AsyncMock)
+    @patch("src.tools.search.replies.get_entity_by_id", new_callable=AsyncMock)
+    @patch("src.tools.search.replies._fetch_replies", new_callable=AsyncMock)
+    async def test_fetch_replies_failure_returns_error(
+        self, mock_fetch_replies, mock_get_entity, mock_get_client
+    ):
+        """Should return error when fetching replies raises."""
+        mock_get_client.return_value = AsyncMock()
+        mock_get_entity.return_value = Mock()
+        mock_fetch_replies.side_effect = RuntimeError("network error")
+
+        result = await search_messages_impl(
+            chat_id="me",
+            reply_to_id=123,
+            limit=50,
+        )
+
+        assert isinstance(result, dict)
+        assert "error" in result
+        assert "Failed to fetch replies" in result["error"]
+
+    @pytest.mark.asyncio
+    @patch("src.tools.search.replies.get_connected_client", new_callable=AsyncMock)
+    @patch("src.tools.search.replies.get_entity_by_id", new_callable=AsyncMock)
+    async def test_invalid_entity_for_replies(self, mock_get_entity, mock_get_client):
+        """Should return error when entity not found."""
+        mock_get_client.return_value = AsyncMock()
+        mock_get_entity.return_value = None
+
+        result = await search_messages_impl(
+            chat_id="invalid_chat",
+            reply_to_id=100,
+        )
+
+        assert isinstance(result, dict)
+        assert "error" in result
+        assert "Could not find chat" in result["error"]
+
+
+class TestGetMessagesSuccessPaths:
+    """Test successful execution paths for different modes."""
+
+    @pytest.mark.asyncio
+    @patch("src.tools.search.core.read_messages_by_ids", new_callable=AsyncMock)
+    async def test_message_ids_mode_success(self, mock_read):
+        """message_ids mode should return unified dict format."""
+        mock_read.return_value = [{"id": 1, "text": "Message"}]
+
+        result = await search_messages_impl(
+            chat_id="me",
+            message_ids=[1],
+        )
+
+        mock_read.assert_called_once()
+        assert isinstance(result, dict)
+        assert "messages" in result
+        assert "has_more" in result
+        assert result["has_more"] is False
+
+    @pytest.mark.asyncio
+    async def test_global_search_requires_query(self):
+        """Global search without query should return error."""
+        result = await search_messages_impl()
+
+        assert "error" in result
+        assert "global search" in result["error"].lower()
+
+
+class TestGetMessagesChatFieldExclusion:
+    """Test that chat field is excluded when chat_id is provided."""
+
+    @pytest.mark.asyncio
+    @patch("src.tools.search.search_mode.get_connected_client", new_callable=AsyncMock)
+    async def test_global_search_includes_chat_field(self, mock_get_client):
+        """Global search (no chat_id) should include chat in each message."""
+        from telethon.tl.types import PeerUser
+
+        mock_client = AsyncMock()
+        mock_msg = make_mock_message(
+            id=1,
+            text="global search result",
+            date=datetime.now(),
+            peer_id=PeerUser(user_id=123),
+        )
+
+        mock_search_result = Mock()
+        mock_search_result.messages = [mock_msg]
+        mock_client.return_value = mock_search_result
+        mock_client.get_me = AsyncMock(return_value=Mock(premium=False))
+
+        mock_chat = Mock()
+        mock_chat.id = 456
+        mock_chat.title = "Some Chat"
+        mock_chat.username = "somechat"
+        mock_chat.broadcast = False
+
+        async def mock_get_entity(peer):
+            return mock_chat
+
+        mock_get_client.return_value = mock_client
+
+        with patch(
+            "src.tools.search.search_generators.get_entity_by_id",
+            side_effect=mock_get_entity,
+        ):
+            result = await search_messages_impl(
+                chat_id=None,
+                query="hello",
+                limit=5,
+            )
+
+        if "messages" in result:
+            for msg in result["messages"]:
+                assert "chat" in msg, (
+                    f"Expected chat field in global search result, got {msg.keys()}"
+                )
+
+
+class TestGetMessagesRepliesChatExclusion:
+    """Test that replies mode excludes chat field."""
+
+    @pytest.mark.asyncio
+    @patch("src.tools.search.replies.get_connected_client", new_callable=AsyncMock)
+    @patch("src.tools.search.replies.get_entity_by_id", new_callable=AsyncMock)
+    @patch("src.tools.search.replies._fetch_replies", new_callable=AsyncMock)
+    async def test_replies_mode_excludes_chat_field(
+        self, mock_fetch_replies, mock_get_entity, mock_get_client
+    ):
+        """Replies mode should exclude chat from returned messages."""
+        mock_get_client.return_value = AsyncMock()
+        mock_entity = Mock()
+        mock_entity.broadcast = False
+        mock_get_entity.return_value = mock_entity
+
+        mock_fetch_replies.return_value = (
+            [
+                {"id": 10, "text": "reply 1"},  # no chat key
+                {"id": 11, "text": "reply 2"},  # no chat key
+            ],
+            None,
+        )
+
+        result = await search_messages_impl(
+            chat_id="testchat",
+            reply_to_id=5,
+            limit=10,
+        )
+
+        assert "messages" in result
+        for msg in result["messages"]:
+            assert "chat" not in msg
+
+
+class TestReadMessagesByIdsChatExclusion:
+    """Test that read_messages_by_ids excludes chat field."""
+
+    @pytest.mark.asyncio
+    @patch("src.tools.messages.reading.get_connected_client", new_callable=AsyncMock)
+    @patch("src.tools.messages.reading.get_entity_by_id", new_callable=AsyncMock)
+    async def test_read_messages_by_ids_excludes_chat_field(
+        self, mock_get_entity, mock_get_client
+    ):
+        """read_messages_by_ids should exclude chat from returned messages."""
+        from src.tools.messages.reading import read_messages_by_ids
+
+        mock_entity = Mock()
+        mock_entity.id = 123456
+        mock_entity.title = "Test Chat"
+        mock_entity.username = "testchat"
+
+        mock_get_entity.return_value = mock_entity
+
+        mock_msg = make_mock_message(
+            id=1,
+            text="message text",
+            date=datetime.now(),
+        )
+
+        mock_client = AsyncMock()
+        mock_client.get_messages = AsyncMock(return_value=[mock_msg])
+        mock_client.get_me = AsyncMock(return_value=Mock(premium=False))
+        mock_get_client.return_value = mock_client
+
+        with patch(
+            "src.tools.messages.reading.generate_telegram_links",
+            new=AsyncMock(return_value={"message_links": ["https://t.me/testchat/1"]}),
+        ):
+            result = await read_messages_by_ids("testchat", [1])
+
+        assert len(result) == 1
+        assert "chat" not in result[0], (
+            f"Expected no chat field, got {result[0].keys()}"
+        )
+
+
+class TestGetMessagesChatFieldIntegration:
+    """Integration tests for chat field exclusion behavior."""
+
+    @pytest.mark.asyncio
+    @patch("src.tools.search.core.read_messages_by_ids", new_callable=AsyncMock)
+    async def test_message_ids_mode_excludes_chat_field(self, mock_read):
+        """message_ids mode should exclude chat from results."""
+        mock_read.return_value = [
+            {"id": 1, "text": "Message 1"},  # no chat
+            {"id": 2, "text": "Message 2"},  # no chat
+        ]
+
+        result = await search_messages_impl(
+            chat_id="me",
+            message_ids=[1, 2],
+        )
+
+        assert "messages" in result
+        for msg in result["messages"]:
+            assert "chat" not in msg, (
+                f"Expected no chat in message_ids mode, got {msg.get('chat')}"
+            )
+
+
+class TestGetMessagesDateFiltering:
+    """Test min_date/max_date filtering for per-chat search."""
+
+    @pytest.mark.asyncio
+    async def test_invalid_min_date_returns_error(self):
+        result = await search_messages_impl(
+            chat_id="me",
+            query="hi",
+            min_date="not-iso",
+            limit=10,
+        )
+        assert "error" in result
+        assert result["operation"] == "get_messages"
+        assert "Invalid min_date format" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_invalid_max_date_returns_error(self):
+        result = await search_messages_impl(
+            chat_id="me",
+            query="hi",
+            max_date="bogus",
+            limit=10,
+        )
+        assert "error" in result
+        assert "Invalid max_date format" in result["error"]
+
+    @pytest.mark.asyncio
+    @patch("src.tools.search.search_mode.get_connected_client", new_callable=AsyncMock)
+    @patch("src.tools.search.search_mode.get_entity_by_id", new_callable=AsyncMock)
+    async def test_search_chat_respects_min_date(
+        self, mock_get_entity, mock_get_client
+    ):
+        """Should filter out messages older than min_date."""
+        from tests.conftest import make_mock_message
+
+        # Set up entity mock
+        mock_entity = Mock()
+        mock_entity.id = 123
+        mock_entity.broadcast = False
+        mock_get_entity.return_value = mock_entity
+
+        # Set up client mock with iter_messages
+        mock_client = MagicMock()
+        mock_client.get_me = AsyncMock(return_value=Mock(premium=False))
+
+        # Create messages with different dates
+        old_msg = make_mock_message(
+            id=1, text="Old message", date=datetime(2023, 1, 1, tzinfo=UTC)
+        )
+        recent_msg = make_mock_message(
+            id=2, text="Recent message", date=datetime(2024, 6, 15, tzinfo=UTC)
+        )
+        future_msg = make_mock_message(
+            id=3, text="Future message", date=datetime(2025, 1, 1, tzinfo=UTC)
+        )
+
+        # Return messages in order (newest to oldest when iterated)
+        # iter_messages is an async iterator, so we need to return an async iterator
+        async def mock_iter_messages_gen():
+            for msg in [future_msg, recent_msg, old_msg]:
+                yield msg
+
+        mock_client.iter_messages = MagicMock(return_value=mock_iter_messages_gen())
+        mock_get_client.return_value = mock_client
+
+        result = await search_messages_impl(
+            chat_id="me",
+            query="message",
+            min_date="2024-01-01",
+            limit=50,
+        )
+
+        assert "messages" in result
+        # Should return 2 messages (2024 and 2025), not 2023
+        assert len(result["messages"]) == 2
+        msg_ids = {msg["id"] for msg in result["messages"]}
+        assert 1 not in msg_ids  # Old message should be filtered
+        assert 2 in msg_ids  # Recent message should be included
+        assert 3 in msg_ids  # Future message should be included
+
+    @pytest.mark.asyncio
+    @patch("src.tools.search.search_mode.get_connected_client", new_callable=AsyncMock)
+    @patch("src.tools.search.search_mode.get_entity_by_id", new_callable=AsyncMock)
+    async def test_search_chat_respects_max_date(
+        self, mock_get_entity, mock_get_client
+    ):
+        """Should filter out messages newer than max_date."""
+        from tests.conftest import make_mock_message
+
+        mock_entity = Mock()
+        mock_entity.id = 123
+        mock_entity.broadcast = False
+        mock_get_entity.return_value = mock_entity
+
+        mock_client = MagicMock()
+        mock_client.get_me = AsyncMock(return_value=Mock(premium=False))
+
+        old_msg = make_mock_message(
+            id=1, text="Old message", date=datetime(2023, 1, 1, tzinfo=UTC)
+        )
+        recent_msg = make_mock_message(
+            id=2, text="Recent message", date=datetime(2024, 6, 15, tzinfo=UTC)
+        )
+        future_msg = make_mock_message(
+            id=3, text="Future message", date=datetime(2025, 1, 1, tzinfo=UTC)
+        )
+
+        async def mock_iter_messages_gen():
+            for msg in [future_msg, recent_msg, old_msg]:
+                yield msg
+
+        mock_client.iter_messages = MagicMock(return_value=mock_iter_messages_gen())
+        mock_get_client.return_value = mock_client
+
+        result = await search_messages_impl(
+            chat_id="me",
+            query="message",
+            max_date="2024-12-31",
+            limit=50,
+        )
+
+        assert "messages" in result
+        # Should return 2 messages (2023 and 2024), not 2025
+        assert len(result["messages"]) == 2
+        msg_ids = {msg["id"] for msg in result["messages"]}
+        assert 3 not in msg_ids  # Future message should be filtered
+        assert 2 in msg_ids  # Recent message should be included
+        assert 1 in msg_ids  # Old message should be included
+
+    @pytest.mark.asyncio
+    @patch("src.tools.search.search_mode.get_connected_client", new_callable=AsyncMock)
+    @patch("src.tools.search.search_mode.get_entity_by_id", new_callable=AsyncMock)
+    async def test_search_chat_respects_date_range(
+        self, mock_get_entity, mock_get_client
+    ):
+        """Should filter to only messages within min_date and max_date range."""
+        from tests.conftest import make_mock_message
+
+        mock_entity = Mock()
+        mock_entity.id = 123
+        mock_entity.broadcast = False
+        mock_get_entity.return_value = mock_entity
+
+        mock_client = MagicMock()
+        mock_client.get_me = AsyncMock(return_value=Mock(premium=False))
+
+        old_msg = make_mock_message(
+            id=1, text="Old message", date=datetime(2023, 1, 1, tzinfo=UTC)
+        )
+        recent_msg = make_mock_message(
+            id=2, text="Recent message", date=datetime(2024, 6, 15, tzinfo=UTC)
+        )
+        future_msg = make_mock_message(
+            id=3, text="Future message", date=datetime(2025, 1, 1, tzinfo=UTC)
+        )
+
+        async def mock_iter_messages_gen():
+            for msg in [future_msg, recent_msg, old_msg]:
+                yield msg
+
+        mock_client.iter_messages = MagicMock(return_value=mock_iter_messages_gen())
+        mock_get_client.return_value = mock_client
+
+        result = await search_messages_impl(
+            chat_id="me",
+            query="message",
+            min_date="2024-01-01",
+            max_date="2024-12-31",
+            limit=50,
+        )
+
+        assert "messages" in result
+        # Should return only 1 message (2024-06-15)
+        assert len(result["messages"]) == 1
+        assert result["messages"][0]["id"] == 2
+
+    @pytest.mark.asyncio
+    @patch("src.tools.search.search_mode.get_connected_client", new_callable=AsyncMock)
+    @patch("src.tools.search.search_mode.get_entity_by_id", new_callable=AsyncMock)
+    async def test_search_chat_stops_at_min_date_boundary(
+        self, mock_get_entity, mock_get_client
+    ):
+        """Should stop fetching when hitting min_date boundary (return, not continue)."""
+        from tests.conftest import make_mock_message
+
+        mock_entity = Mock()
+        mock_entity.id = 123
+        mock_entity.broadcast = False
+        mock_get_entity.return_value = mock_entity
+
+        mock_client = MagicMock()
+        mock_client.get_me = AsyncMock(return_value=Mock(premium=False))
+
+        # Create 5 messages - only 2 should be returned after min_date filter
+        msgs = [
+            make_mock_message(
+                id=5, text="Msg 2025", date=datetime(2025, 1, 1, tzinfo=UTC)
+            ),
+            make_mock_message(
+                id=4,
+                text="Msg mid 2024",
+                date=datetime(2024, 6, 15, tzinfo=UTC),
+            ),
+            make_mock_message(
+                id=3,
+                text="Msg early 2024",
+                date=datetime(2024, 1, 15, tzinfo=UTC),
+            ),  # min boundary
+            make_mock_message(
+                id=2,
+                text="Msg late 2023",
+                date=datetime(2023, 12, 1, tzinfo=UTC),
+            ),
+            make_mock_message(
+                id=1, text="Msg 2022", date=datetime(2022, 1, 1, tzinfo=UTC)
+            ),
+        ]
+
+        async def mock_iter_messages_gen():
+            for msg in msgs:
+                yield msg
+
+        mock_client.iter_messages = MagicMock(return_value=mock_iter_messages_gen())
+        mock_get_client.return_value = mock_client
+
+        result = await search_messages_impl(
+            chat_id="me",
+            query="Msg",
+            min_date="2024-01-01",
+            limit=10,
+        )
+
+        assert "messages" in result
+        # Should return 3 messages (2025, mid 2024, early 2024)
+        # Should STOP at early 2024 (id=3) and NOT process late 2023 (id=2) or 2022 (id=1)
+        assert len(result["messages"]) == 3
+        msg_ids = {msg["id"] for msg in result["messages"]}
+        assert msg_ids == {5, 4, 3}
+        assert 2 not in msg_ids  # Should not have processed these
+        assert 1 not in msg_ids
+
+    @pytest.mark.asyncio
+    @patch("src.tools.search.search_mode.get_connected_client", new_callable=AsyncMock)
+    @patch("src.tools.search.search_mode.get_entity_by_id", new_callable=AsyncMock)
+    async def test_search_chat_handles_none_date(
+        self, mock_get_entity, mock_get_client
+    ):
+        """Should pass through messages with None date (unknown date = don't filter)."""
+        from tests.conftest import make_mock_message
+
+        mock_entity = Mock()
+        mock_entity.id = 123
+        mock_entity.broadcast = False
+        mock_get_entity.return_value = mock_entity
+
+        mock_client = MagicMock()
+        mock_client.get_me = AsyncMock(return_value=Mock(premium=False))
+
+        msg_with_date = make_mock_message(
+            id=1, text="Dated message", date=datetime(2024, 6, 15, tzinfo=UTC)
+        )
+        msg_no_date = make_mock_message(id=2, text="Unknown date", date=None)
+
+        async def mock_iter_messages_gen():
+            for msg in [msg_with_date, msg_no_date]:
+                yield msg
+
+        mock_client.iter_messages = MagicMock(return_value=mock_iter_messages_gen())
+        mock_get_client.return_value = mock_client
+
+        result = await search_messages_impl(
+            chat_id="me",
+            query="message",
+            min_date="2024-01-01",
+            limit=50,
+        )
+
+        assert "messages" in result
+        # Both messages should pass - None date is not filtered
+        assert len(result["messages"]) == 2
+
+    @pytest.mark.asyncio
+    @patch("src.tools.search.search_mode.get_connected_client", new_callable=AsyncMock)
+    @patch("src.tools.search.search_mode.get_entity_by_id", new_callable=AsyncMock)
+    async def test_browse_includes_service_message_in_date_window(
+        self, mock_get_entity, mock_get_client
+    ):
+        """Recent Telegram service messages count as dialog activity but had no exportable text."""
+        from tests.conftest import make_mock_message
+
+        mock_entity = Mock()
+        mock_entity.id = 123
+        mock_entity.broadcast = False
+        mock_get_entity.return_value = mock_entity
+
+        mock_client = MagicMock()
+        mock_client.get_me = AsyncMock(return_value=Mock(premium=False))
+
+        pin_action = MagicMock()
+        pin_action.__class__.__name__ = "MessageActionPinMessage"
+        service_msg = make_mock_message(
+            id=99,
+            text="",
+            date=datetime(2024, 6, 20, tzinfo=UTC),
+            media=None,
+            action=pin_action,
+        )
+        service_msg.message = ""
+        service_msg.caption = None
+        service_msg.forward = None
+
+        old_msg = make_mock_message(
+            id=1, text="old", date=datetime(2020, 1, 1, tzinfo=UTC)
+        )
+
+        async def mock_iter_messages_gen():
+            for msg in [service_msg, old_msg]:
+                yield msg
+
+        mock_client.iter_messages = MagicMock(return_value=mock_iter_messages_gen())
+        mock_get_client.return_value = mock_client
+
+        result = await search_messages_impl(
+            chat_id="me",
+            query=None,
+            min_date="2024-06-01",
+            limit=10,
+        )
+
+        assert "messages" in result
+        assert len(result["messages"]) == 1
+        assert result["messages"][0]["id"] == 99
+        assert "[Service: PinMessage]" in (result["messages"][0].get("text") or "")
