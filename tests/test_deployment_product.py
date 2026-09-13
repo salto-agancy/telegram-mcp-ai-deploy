@@ -1,11 +1,29 @@
 """Static acceptance checks for the portable deployment product."""
 
+import importlib.util
+import os
 import subprocess
+import urllib.error
+import urllib.request
 from pathlib import Path
+from types import ModuleType
+from unittest import mock
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_smoke_module() -> ModuleType:
+    """Import scripts/mcp_smoke.py by path; it is a script, not a package module."""
+    spec = importlib.util.spec_from_file_location(
+        "mcp_smoke", ROOT / "scripts/mcp_smoke.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def compose() -> dict:
@@ -118,9 +136,9 @@ def test_runtime_state_is_gitignored() -> None:
 
 def test_update_defaults_to_stable_tags_and_can_rollback() -> None:
     script = (ROOT / "scripts/update.sh").read_text(encoding="utf-8")
-    assert 'UPDATE_CHANNEL:-stable' in script
+    assert "UPDATE_CHANNEL:-stable" in script
     assert "refs/tags/v[0-9]*" in script
-    assert "git switch --detach \"$previous\"" in script
+    assert 'git switch --detach "$previous"' in script
     assert "TELEGRAM_SMOKE" in script
 
 
@@ -216,3 +234,89 @@ def test_docker_validation_uses_public_example_env_files() -> None:
     assert "RUNTIME_ENV_FILE=.runtime.env.example" in makefile
     assert "${APP_ENV_FILE:-./.env}" in compose_text
     assert "${RUNTIME_ENV_FILE:-./.runtime.env}" in compose_text
+
+
+def test_deploy_waits_for_tunnel_registration_before_public_probe() -> None:
+    """The public probe must run only after the connector registered an edge connection."""
+    deploy = (ROOT / "scripts/deploy.sh").read_text(encoding="utf-8")
+    common = (ROOT / "scripts/lib/common.sh").read_text(encoding="utf-8")
+    assert "wait_for_tunnel_registration" in common
+    assert "Registered tunnel connection" in common
+    wait_at = deploy.index("wait_for_tunnel_registration")
+    probe_at = deploy.index("scripts/healthcheck.sh")
+    assert wait_at < probe_at, (
+        "tunnel readiness must be gated before the public healthcheck"
+    )
+
+
+def test_tunnel_wait_fails_closed_when_connector_never_registers(
+    tmp_path: Path,
+) -> None:
+    """A connector that never registers must fail the deployment, not pass it silently."""
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    docker = fake_bin / "docker"
+    docker.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    docker.chmod(0o755)
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "source scripts/lib/common.sh; TUNNEL_READY_TIMEOUT=1 wait_for_tunnel_registration",
+        ],
+        cwd=ROOT,
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "did not register a tunnel connection" in result.stderr
+
+
+def test_public_probe_retries_transient_failures_then_succeeds() -> None:
+    """One transient edge error must not fail an otherwise healthy deployment."""
+    smoke = _load_smoke_module()
+    attempts = {"n": 0}
+
+    class _Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    def _flaky(_request, timeout=0):
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise urllib.error.URLError("transient edge failure")
+        return _Response()
+
+    with mock.patch.object(smoke.urllib.request, "urlopen", _flaky):
+        status = smoke.open_with_retries(
+            urllib.request.Request("https://mcp.example.com/.well-known/x"),
+            timeout=1,
+            sleep=lambda _seconds: None,
+        )
+    assert status == 200
+    assert attempts["n"] == 3
+
+
+def test_public_probe_gives_up_after_bounded_attempts() -> None:
+    """Retries are bounded: a genuinely unreachable endpoint still fails the deployment."""
+    smoke = _load_smoke_module()
+
+    def _always_down(_request, timeout=0):
+        raise urllib.error.URLError("edge down")
+
+    with (
+        mock.patch.object(smoke.urllib.request, "urlopen", _always_down),
+        pytest.raises(RuntimeError, match="did not answer after"),
+    ):
+        smoke.open_with_retries(
+            urllib.request.Request("https://mcp.example.com/.well-known/x"),
+            timeout=1,
+            attempts=3,
+            sleep=lambda _seconds: None,
+        )

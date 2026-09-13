@@ -14,6 +14,10 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 - Make `make docker-validate` work in a fresh clone using only public example files.
 - Allow external contributors to use their chosen Git commit email while still rejecting
   private maintainer email metadata and personal data in repository contents.
+- Wait for the Cloudflare Tunnel connector to register an edge connection before running the
+  public healthcheck, so a correct deployment is no longer reported as failed.
+- Retry the first public probe a bounded number of times to absorb tunnel route and proxied
+  DNS propagation, while still failing closed when the endpoint is genuinely unreachable.
 
 ### Security
 

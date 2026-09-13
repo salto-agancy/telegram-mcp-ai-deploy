@@ -48,3 +48,20 @@ secure_runtime_files() {
     fail "runtime files require root ownership migration or APP_UID/APP_GID matching the deploy user"
   fi
 }
+
+# `docker compose up -d` returns as soon as the cloudflared container starts, but the
+# connector still has to register its edge connections before the public hostname resolves
+# to this tunnel. The image is distroless and exposes no healthcheck, so gate on the
+# connector's own readiness line instead of probing the public endpoint too early.
+wait_for_tunnel_registration() {
+  local deadline=$((SECONDS + ${TUNNEL_READY_TIMEOUT:-120}))
+  while (( SECONDS < deadline )); do
+    if docker compose logs --no-color --tail=200 cloudflared 2>/dev/null \
+      | grep -q 'Registered tunnel connection'; then
+      info "Cloudflare Tunnel registered an edge connection"
+      return 0
+    fi
+    sleep 3
+  done
+  fail "cloudflared did not register a tunnel connection before the public healthcheck"
+}

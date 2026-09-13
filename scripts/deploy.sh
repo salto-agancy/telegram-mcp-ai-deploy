@@ -24,4 +24,6 @@ while (( SECONDS < deadline )); do
   sleep 3
 done
 
+wait_for_tunnel_registration
+
 "$REPO_ROOT/scripts/healthcheck.sh"
