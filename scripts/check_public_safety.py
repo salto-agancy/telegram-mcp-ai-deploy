@@ -100,7 +100,16 @@ def main() -> int:
     if args.history:
         for revision in git("rev-list", "--all").splitlines():
             findings.extend(tree_findings(revision))
-        findings.extend(scan("git-metadata", git("log", "--all", "--format=%H %an %ae")))
+        # GitHub Actions checks out a synthetic merge commit for pull requests. Its
+        # author metadata comes from the account profile rather than either real
+        # commit, so scan only publishable non-merge commit metadata here. Every
+        # tree, including merge trees, is still scanned above.
+        findings.extend(
+            scan(
+                "git-metadata",
+                git("log", "--all", "--no-merges", "--format=%H %an %ae"),
+            )
+        )
 
     unique = sorted(set(findings))
     if unique:

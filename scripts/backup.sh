@@ -6,8 +6,10 @@ need docker
 need openssl
 
 if [[ -z "${BACKUP_PASSPHRASE:-}" ]]; then
-  read -r -s -p 'Backup encryption passphrase: ' BACKUP_PASSPHRASE
+  BACKUP_PASSPHRASE=""
+  read -r -s -p 'Backup encryption passphrase: ' BACKUP_PASSPHRASE || true
   printf '\n'
+  [[ -n "$BACKUP_PASSPHRASE" ]] || fail "backup encryption passphrase is empty"
   export BACKUP_PASSPHRASE
 fi
 [[ ${#BACKUP_PASSPHRASE} -ge 16 ]] || fail "backup passphrase must be at least 16 characters"

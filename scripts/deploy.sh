@@ -2,6 +2,9 @@
 set -Eeuo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/lib/common.sh"
 cd "$REPO_ROOT"
+"$REPO_ROOT/scripts/preflight.sh" config
+configure_container_identity
+secure_runtime_files
 "$REPO_ROOT/scripts/preflight.sh" deploy
 "$REPO_ROOT/scripts/secret-scan.sh" --worktree
 

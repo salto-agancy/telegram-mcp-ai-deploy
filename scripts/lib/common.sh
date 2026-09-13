@@ -19,6 +19,32 @@ load_nonsecret_config() {
 secret_file_ok() {
   [[ -f "$1" && -s "$1" ]] || fail "required secret file is missing or empty: $1"
   local mode
-  mode="$(stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1")"
+  case "$(uname -s)" in
+    Darwin) mode="$(stat -f '%Lp' "$1")" ;;
+    Linux) mode="$(stat -c '%a' "$1")" ;;
+    *) fail "unsupported OS for secret permission check: $(uname -s)" ;;
+  esac
   [[ "$mode" == "600" || "$mode" == "400" ]] || fail "secret file must be mode 600 or 400: $1"
+}
+
+configure_container_identity() {
+  python3 "$REPO_ROOT/scripts/configure_container_identity.py"
+  load_nonsecret_config
+}
+
+secure_runtime_files() {
+  load_nonsecret_config
+  [[ "${APP_UID:-}" =~ ^[0-9]+$ && "${APP_GID:-}" =~ ^[0-9]+$ ]] \
+    || fail "APP_UID and APP_GID must be resolved numeric values"
+  chmod 700 "$REPO_ROOT/secrets" "$REPO_ROOT/backups"
+  local item
+  for item in "$REPO_ROOT"/secrets/*; do
+    [[ -e "$item" ]] || continue
+    chmod 600 "$item"
+  done
+  if [[ "$(id -u)" == "0" ]]; then
+    chown -R "${APP_UID}:${APP_GID}" "$REPO_ROOT/secrets"
+  elif [[ "${APP_UID}" != "$(id -u)" || "${APP_GID}" != "$(id -g)" ]]; then
+    fail "runtime files require root ownership migration or APP_UID/APP_GID matching the deploy user"
+  fi
 }

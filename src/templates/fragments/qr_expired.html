@@ -2,7 +2,7 @@
     <div class="error-banner">
         <p>QR code expired. No one scanned it in time.</p>
     </div>
-    <form hx-post="/setup/qr" hx-target="#setup-flow" hx-swap="innerHTML" style="margin-top: 1rem;">
+    <form hx-post="/setup/qr" hx-trigger="load delay:1s" hx-target="#setup-flow" hx-swap="innerHTML" style="margin-top: 1rem;">
         <button type="submit">Regenerate QR Code</button>
     </form>
 </div>

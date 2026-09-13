@@ -13,6 +13,7 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+USER_AGENT = "telegram-mcp-healthcheck/1"
 
 
 def env_file(path: Path) -> dict[str, str]:
@@ -42,6 +43,7 @@ def rpc(url: str, token: str | None, method: str, params: dict, request_id: int)
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
         "MCP-Protocol-Version": "2025-06-18",
+        "User-Agent": USER_AGENT,
     }
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -62,7 +64,11 @@ def main() -> None:
     token = (ROOT / "secrets/backend_bearer").read_text(encoding="utf-8").strip()
     base = f"https://{hostname}"
 
-    with urllib.request.urlopen(f"{base}/.well-known/oauth-authorization-server", timeout=20) as response:
+    metadata_request = urllib.request.Request(
+        f"{base}/.well-known/oauth-authorization-server",
+        headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(metadata_request, timeout=20) as response:
         if response.status != 200:
             raise RuntimeError(f"OAuth metadata status is {response.status}")
 

@@ -52,4 +52,6 @@ jobs:
       - run: mkdir -p secrets && touch secrets/backend_bearer secrets/oauth_client_id secrets/oauth_client_secret secrets/cloudflared_token secrets/acl.yaml
       - run: docker compose config --quiet
       - run: docker build --check .
+      - run: docker compose build telegram-mcp
+      - run: docker run --rm --user 10001:10001 cloudflare/cloudflared:latest version
       - run: bash -n scripts/*.sh scripts/lib/*.sh

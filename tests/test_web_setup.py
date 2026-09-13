@@ -44,6 +44,20 @@ def _patch_template_response(monkeypatch, capture: dict | None = None):
     monkeypatch.setattr(web_setup.templates, "TemplateResponse", _tr)
 
 
+def test_setup_desired_token_reads_protected_file(monkeypatch, tmp_path):
+    token_file = tmp_path / "backend_bearer"
+    token_file.write_text(f"{VALID_TEST_BEARER_TOKEN}\n", encoding="utf-8")
+    monkeypatch.setenv("SETUP_DESIRED_TOKEN_FILE", str(token_file))
+
+    assert web_setup._setup_desired_token() == VALID_TEST_BEARER_TOKEN
+
+
+def test_setup_desired_token_is_optional(monkeypatch):
+    monkeypatch.delenv("SETUP_DESIRED_TOKEN_FILE", raising=False)
+
+    assert web_setup._setup_desired_token() is None
+
+
 @pytest.fixture
 def setup_routes():
     app = _FakeMcpApp()
