@@ -135,6 +135,15 @@ def _bearer_token_and_session_path(session_dir: Path, raw_token: str) -> tuple[s
     return token, session_file_path(session_dir, token)
 
 
+def _setup_desired_token() -> str | None:
+    """Read the optional bootstrap bearer without exposing it in process arguments."""
+    path = os.environ.get("SETUP_DESIRED_TOKEN_FILE", "").strip()
+    if not path:
+        return None
+    token = Path(path).read_text(encoding="utf-8").strip()
+    return validate_session_token(token)
+
+
 def _setup_token_path_error_fragment(
     request: Request,
     template: str,
@@ -475,6 +484,7 @@ def register_web_setup_routes(mcp_app):
             "session_path": str(temp_session_path),
             "authorized": False,
             "created_at": time.time(),
+            "desired_token": _setup_desired_token(),
         }
 
         return _fragment(
@@ -841,6 +851,7 @@ def register_web_setup_routes(mcp_app):
             "client": client,
             "authorized": False,
             "created_at": time.time(),
+            "desired_token": _setup_desired_token(),
         }
 
         return _fragment(

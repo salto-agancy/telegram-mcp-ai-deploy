@@ -5,6 +5,8 @@ x-app: &app
     context: .
     args:
       PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.13-alpine}
+      APP_UID: ${APP_UID:-10001}
+      APP_GID: ${APP_GID:-10001}
   image: ${TELEGRAM_MCP_IMAGE:-telegram-mcp:local}
   env_file:
     - path: ./.env
@@ -29,6 +31,7 @@ x-app: &app
 services:
   telegram-mcp:
     <<: *app
+    networks: [mcp-private, telegram-egress]
     environment:
       SERVER_MODE: http-auth
       HOST: 0.0.0.0
@@ -88,6 +91,7 @@ services:
     networks: [mcp-private, tunnel-egress]
     restart: unless-stopped
     init: true
+    user: "${APP_UID:-10001}:${APP_GID:-10001}"
     read_only: true
     cap_drop: [ALL]
     security_opt:
@@ -103,6 +107,7 @@ services:
 
   setup:
     <<: *app
+    networks: [mcp-private, telegram-egress]
     profiles: [setup]
     restart: "no"
     read_only: false
@@ -113,7 +118,7 @@ services:
       SESSION_DIR: /data/sessions
     volumes:
       - telegram-sessions:/data/sessions
-      - ./secrets:/run/secrets
+      - ./secrets/backend_bearer:/run/secrets/backend_bearer
     command:
       - python
       - -m
@@ -129,4 +134,5 @@ volumes:
 networks:
   mcp-private:
     internal: true
+  telegram-egress:
   tunnel-egress:

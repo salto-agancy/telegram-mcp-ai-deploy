@@ -27,8 +27,10 @@ docs/AUTH.md и инструкцию для выбранного мной MCP-к
    целевой VPS/SSH host, hostname MCP, разрешение подготовить VPS, тип Telegram-аккаунта
    и необходимые credentials, read-only или write-доступ с разрешёнными чатами, выбранный
    MCP-клиент. По умолчанию используй read-only, Saved Messages и отключённый raw MTProto.
-3. Никогда не проси вставлять секреты в Git или tracked-файлы. Cloudflare и Telegram
-   credentials получай через скрытый terminal prompt либо игнорируемый файл с правами 600.
+3. Никогда не проси вставлять секреты в Git или tracked-файлы. Не проси пользователя
+   открывать терминал и вручную запускать SSH, Docker или shell-команды: запускай их сам
+   через доступ coding-agent. Cloudflare credentials получай через защищённый prompt
+   coding-agent либо игнорируемый файл с правами 600.
    Не выводи секреты, не помещай их в аргументы команд, видимые в списке процессов, логи,
    чат, commits или финальный отчёт.
 4. Используй scoped Cloudflare API Token с правами Account:Cloudflare Tunnel:Edit,
@@ -49,9 +51,14 @@ docs/AUTH.md и инструкцию для выбранного мной MCP-к
   Docker требует новой SSH-сессии, переподключись один раз.
 - Выполни scripts/init-secrets.sh. Заполни .env и .runtime.env только обнаруженными или
   полученными значениями, установи права 600 и не показывай их содержимое.
-- Интерактивно выполни scripts/telegram-login.sh. Дай мне самостоятельно ввести OTP и 2FA
-  непосредственно в prompt. Только по метаданным проверь наличие secrets/backend_bearer
-  и secrets/acl.yaml.
+- Для user-account сначала выполни на VPS `scripts/telegram-login-web.sh start`. Сам создай
+  локальный SSH forward к выведенному loopback-порту и сам открой в моём браузере страницу
+  `/setup?branch=new-session`. Я только сканирую автоматически обновляемый QR в Telegram и,
+  если потребуется, ввожу 2FA-пароль в защищённую web-форму. Не проси меня открывать
+  Terminal. Сам опрашивай `scripts/telegram-login-web.sh status`, после успеха выполни
+  `scripts/telegram-login-web.sh finish` и закрой SSH forward. Никогда не публикуй setup-port.
+- `scripts/telegram-login.sh` используй только как fallback для bot-account или если QR-login
+  технически недоступен; PTY всё равно запускает агент, а не пользователь.
 - Выполни scripts/cloudflare-provision.sh. Он должен через API создать или согласовать
   tunnel, ingress и DNS, а затем локально сохранить только connector token. Не отправляй
   меня выполнять действия в панели Cloudflare, если API работает.

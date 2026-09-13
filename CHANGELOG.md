@@ -13,6 +13,28 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ### Security
 
+## [0.34.1] - 2026-09-13
+
+### Added
+
+- Add a loopback-only, SSH-forwarded Telegram QR/2FA installer flow with automatic QR refresh.
+
+### Changed
+
+- Resolve non-root container UID/GID safely instead of assuming host UID 1000 is available.
+- Give only the Telegram and tunnel services their required outbound connectivity.
+
+### Fixed
+
+- Restore required outbound Telegram connectivity while keeping normal host ports closed.
+- Align protected runtime file ownership for the backend, setup flow and cloudflared.
+- Make Linux secret-mode checks, piped credentials and Cloudflare-facing smoke requests portable.
+
+### Security
+
+- Keep the temporary setup portal bound to VPS loopback and require the coding agent to close
+  its SSH forward after login.
+
 ## [0.34.0] - 2026-09-12
 
 ### Added
@@ -39,5 +61,6 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 - Application containers publish no VPS ports; CI and pre-push hooks scan full Git history.
 - Locked runtime dependencies include patched releases for all GitHub security alerts known at release time.
 
-[Unreleased]: https://github.com/salto-agancy/telegram-mcp-ai-deploy/compare/v0.34.0...HEAD
+[Unreleased]: https://github.com/salto-agancy/telegram-mcp-ai-deploy/compare/v0.34.1...HEAD
+[0.34.1]: https://github.com/salto-agancy/telegram-mcp-ai-deploy/compare/v0.34.0...v0.34.1
 [0.34.0]: https://github.com/salto-agancy/telegram-mcp-ai-deploy/releases/tag/v0.34.0

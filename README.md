@@ -38,7 +38,9 @@ cd telegram-mcp-ai-deploy
 
 Open the directory in Codex, Claude Code or another capable coding agent and paste the
 prompt from [INSTALL_WITH_AI.md](INSTALL_WITH_AI.md). The agent performs preflight,
-prepares the VPS, provisions Cloudflare, deploys the stack and verifies the MCP protocol.
+prepares the VPS, opens a temporary SSH-forwarded QR login page in the local browser,
+provisions Cloudflare, deploys the stack and verifies the MCP protocol. The operator never
+needs to open a terminal manually.
 
 Manual operator path: [QUICKSTART.md](QUICKSTART.md).
 
@@ -78,6 +80,10 @@ previous commit if deployment fails. See [docs/UPDATE.md](docs/UPDATE.md).
 3. Ask Codex or Claude Code to investigate using
    [PROMPTS/CONTRIBUTE_WITH_AI.md](PROMPTS/CONTRIBUTE_WITH_AI.md).
 4. If it finds a fix, let it create a tested Pull Request.
+
+If an installation agent already found local fixes, use the Russian retrospective prompt in
+[PROMPTS/REPORT_INSTALLATION_WITH_AI_RU.md](PROMPTS/REPORT_INSTALLATION_WITH_AI_RU.md) to
+extract only sanitized, still-missing changes into a fork and Pull Request.
 
 ## Contribute
 

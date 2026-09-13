@@ -1,0 +1,8 @@
+services:
+  telegram-mcp:
+    environment:
+      SETUP_DESIRED_TOKEN_FILE: /run/secrets/backend_bearer
+    volumes:
+      - ./secrets/backend_bearer:/run/secrets/backend_bearer:ro
+    ports:
+      - "127.0.0.1:${TELEGRAM_SETUP_PORT:-8765}:8000"
