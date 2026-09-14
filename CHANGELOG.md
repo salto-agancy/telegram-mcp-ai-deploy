@@ -11,6 +11,10 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ### Fixed
 
+- Make `make docker-validate` work in a fresh clone using only public example files.
+- Allow external contributors to use their chosen Git commit email while still rejecting
+  private maintainer email metadata and personal data in repository contents.
+
 ### Security
 
 ## [0.34.1] - 2026-09-13

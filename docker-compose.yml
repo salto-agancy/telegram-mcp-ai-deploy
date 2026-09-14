@@ -9,9 +9,9 @@ x-app: &app
       APP_GID: ${APP_GID:-10001}
   image: ${TELEGRAM_MCP_IMAGE:-telegram-mcp:local}
   env_file:
-    - path: ./.env
+    - path: ${APP_ENV_FILE:-./.env}
       required: true
-    - path: ./.runtime.env
+    - path: ${RUNTIME_ENV_FILE:-./.runtime.env}
       required: true
   networks: [mcp-private]
   restart: unless-stopped

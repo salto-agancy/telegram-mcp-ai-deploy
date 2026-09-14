@@ -205,5 +205,14 @@ def test_qr_expiry_regenerates_without_terminal() -> None:
 
 def test_public_safety_ignores_github_synthetic_merge_metadata_only() -> None:
     scanner = (ROOT / "scripts/check_public_safety.py").read_text(encoding="utf-8")
-    assert 'git("log", "--all", "--no-merges"' in scanner
+    assert '"--no-merges"' in scanner
     assert "for revision in git(\"rev-list\", \"--all\")" in scanner
+
+
+def test_docker_validation_uses_public_example_env_files() -> None:
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    compose_text = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "APP_ENV_FILE=.env.example" in makefile
+    assert "RUNTIME_ENV_FILE=.runtime.env.example" in makefile
+    assert "${APP_ENV_FILE:-./.env}" in compose_text
+    assert "${RUNTIME_ENV_FILE:-./.runtime.env}" in compose_text

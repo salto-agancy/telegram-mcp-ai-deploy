@@ -27,7 +27,8 @@ security:
 check: lint test test-security test-installer security
 
 docker-validate:
-	docker compose --env-file .env.example config --quiet
+	APP_ENV_FILE=.env.example RUNTIME_ENV_FILE=.runtime.env.example \
+		docker compose --env-file .env.example config --quiet
 	docker build --check .
 
 deploy:

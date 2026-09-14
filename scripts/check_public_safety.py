@@ -26,6 +26,7 @@ PATTERNS = {
 
 SAFE_EMAIL_SUFFIXES = ("@users.noreply.github.com",)
 SAFE_EMAILS = {"noreply@github.com"}
+MAINTAINER_IDENTITIES = frozenset({"Telegram MCP AI Deploy", "salto-agancy"})
 SAFE_PUBLIC_IPS = {
     "1.1.1.1",
     "8.8.8.8",
@@ -90,6 +91,25 @@ def tree_findings(revision: str | None) -> list[tuple[str, str, int]]:
     return findings
 
 
+def maintainer_metadata_findings(text: str) -> list[tuple[str, str, int]]:
+    """Reject private email metadata for project maintainers, not contributors."""
+    findings: list[tuple[str, str, int]] = []
+    for record in text.splitlines():
+        fields = record.split("\x1f")
+        if len(fields) != 5:
+            continue
+        revision, author_name, author_email, committer_name, committer_email = fields
+        for name, email in (
+            (author_name, author_email),
+            (committer_name, committer_email),
+        ):
+            if name in MAINTAINER_IDENTITIES and is_finding("personal-email", email):
+                findings.append(
+                    ("personal-email", f"git-metadata:{revision[:12]}", 1)
+                )
+    return findings
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--worktree", action="store_true")
@@ -105,9 +125,13 @@ def main() -> int:
         # commit, so scan only publishable non-merge commit metadata here. Every
         # tree, including merge trees, is still scanned above.
         findings.extend(
-            scan(
-                "git-metadata",
-                git("log", "--all", "--no-merges", "--format=%H %an %ae"),
+            maintainer_metadata_findings(
+                git(
+                    "log",
+                    "--all",
+                    "--no-merges",
+                    "--format=%H%x1f%an%x1f%ae%x1f%cn%x1f%ce",
+                )
             )
         )
 
