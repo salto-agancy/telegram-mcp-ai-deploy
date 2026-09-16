@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from telethon import errors as tg_errors
@@ -22,6 +23,15 @@ logger = logging.getLogger(__name__)
 # Concurrency is bounded on purpose: Telegram answers a burst with FloodWait,
 # and a benchmark bought with rate limiting is not a real improvement.
 DEFAULT_CONCURRENCY = 4
+
+# Telethon sleeps off a FloodWait shorter than its flood_sleep_threshold (60s by
+# default) and retries without raising, so `except FloodWaitError` never fires and
+# the wait shows up only as elapsed time. Measured on a real account: after ~60
+# rapid reads Telegram answered every request with FloodWait 29s, the telemetry
+# reported zero flood events, and the run simply looked slow. A read that takes
+# longer than this is therefore recorded as a stall, which is a statement about
+# what was observed rather than a guess at the cause.
+STALL_SECONDS = 5.0
 
 _VOICE_ATTRS = ("voice", "round", "audio")
 
@@ -117,6 +127,7 @@ async def fetch_chat_window(
     """Read one chat's window. Returns (messages, has_more, error)."""
     collected: list[ArchiveMessage] = []
     has_more = False
+    started = time.monotonic()
     try:
         async for message in client.iter_messages(chat_id, limit=limit + 1):
             date = getattr(message, "date", None)
@@ -135,6 +146,7 @@ async def fetch_chat_window(
             )
         if run is not None:
             run.telegram_rpc_calls += 1
+            run.note_read_duration(time.monotonic() - started)
     except tg_errors.FloodWaitError as exc:
         if run is not None:
             run.flood_wait_events += 1
