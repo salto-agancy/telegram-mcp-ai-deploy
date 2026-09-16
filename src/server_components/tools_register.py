@@ -16,6 +16,9 @@ from src.server_components import auth as server_auth
 from src.server_components import bot_restrictions
 from src.server_components import errors as server_errors
 from src.server_components.mcp_tool_types import (
+    ActivityAccounts,
+    ActivitySince,
+    ActivityUntil,
     AllowDangerous,
     AutoExpandBatches,
     ChatId,
@@ -24,9 +27,13 @@ from src.server_components.mcp_tool_types import (
     ContactLastName,
     FilesListParam,
     FilterParam,
+    IncludeArchivedDialogs,
+    IncludeChannels,
+    IncludeRunTelemetry,
     IncludeTotalCount,
     LimitChats,
     LimitMessages,
+    LimitMessagesPerChat,
     MaxDate,
     MessageBody,
     MessageIdInChat,
@@ -45,11 +52,14 @@ from src.server_components.mcp_tool_types import (
     ReplyToId,
     ReplyToMsgId,
     ResolveEntities,
+    SearchSource,
     ThreadScope,
     TopicsLimit,
+    UnreadOnly,
 )
 from src.server_components.session_acl import enforce_session_acl
 from src.telemetry import metrics
+from src.tools.activity import recent_activity_impl
 from src.tools.chat_discovery.chat_info import get_chat_info_impl
 from src.tools.chat_discovery.find_chats import find_chats_impl
 from src.tools.external import get_yandex_disk_content_impl
@@ -133,6 +143,16 @@ _DESC_FIND_CHATS = _tool_description(
     "with min_date, max_date, or filter, search uses dialog list or a named filter; "
     "include_peers filters use last-activity from GetPeerDialogs; flag-based filters use dialog list dates. "
     "Success: dict with key chats (list of chat objects). "
+)
+
+_DESC_RECENT_ACTIVITY = _tool_description(
+    "One prepared snapshot of recent activity across chats, instead of discovering "
+    "chats and then opening each one. Returns, per chat: Telegram's own unread state "
+    "(unread_count, read_inbox_max_id, read_outbox_max_id), the messages in the window "
+    "with direction and reply links, attachment metadata, voice transcripts that are "
+    "already available, and last incoming / last outgoing. Voice without a ready "
+    "transcript is marked pending, never omitted. Whether a message needs a reply is "
+    "not decided here. Success: dict with keys chats and coverage. "
 )
 
 _DESC_GET_CHAT_INFO = _tool_description(
@@ -298,6 +318,7 @@ def register_tools(mcp: FastMCP) -> None:
         public: PublicFilter = None,
         auto_expand_batches: AutoExpandBatches = 2,
         include_total_count: IncludeTotalCount = False,
+        source: SearchSource = "auto",
     ) -> dict[str, Any]:
         """Global Telegram message search (full doc URL is in the MCP tool description)."""
         return await search_messages_impl(
@@ -310,6 +331,7 @@ def register_tools(mcp: FastMCP) -> None:
             public=public,
             auto_expand_batches=auto_expand_batches,
             include_total_count=include_total_count,
+            source=source,
         )
 
     @mcp.tool(
@@ -455,6 +477,42 @@ def register_tools(mcp: FastMCP) -> None:
         """Find chats by query, folder, or activity dates (full doc URL in tool description)."""
         return await find_chats_impl(
             query, limit, chat_type, public, min_date, max_date, folder
+        )
+
+    @mcp.tool(
+        description=_DESC_RECENT_ACTIVITY,
+        annotations=ToolAnnotations(
+            title="Recent activity snapshot",
+            readOnlyHint=True,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+    )
+    @mcp_tool_with_restrictions("recent_activity")
+    async def recent_activity(
+        since: ActivitySince = "24h",
+        until: ActivityUntil = None,
+        accounts: ActivityAccounts = None,
+        chat_type: ChatTypeComma = None,
+        limit_chats: LimitChats = 50,
+        limit_messages_per_chat: LimitMessagesPerChat = 20,
+        unread_only: UnreadOnly = False,
+        include_channels: IncludeChannels = False,
+        include_archived_dialogs: IncludeArchivedDialogs = False,
+        include_telemetry: IncludeRunTelemetry = False,
+    ) -> dict[str, Any]:
+        """Batch snapshot of recent Telegram activity (full doc URL in tool description)."""
+        return await recent_activity_impl(
+            since=since,
+            until=until,
+            accounts=accounts,
+            chat_type=chat_type,
+            limit_chats=limit_chats,
+            limit_messages_per_chat=limit_messages_per_chat,
+            unread_only=unread_only,
+            include_channels=include_channels,
+            include_archived_dialogs=include_archived_dialogs,
+            include_telemetry=include_telemetry,
         )
 
     @mcp.tool(

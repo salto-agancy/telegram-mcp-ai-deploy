@@ -55,6 +55,19 @@ ChatTypeComma = Annotated[
     ),
 ]
 
+SearchSource = Annotated[
+    str,
+    Field(
+        description=(
+            "Where global search looks: 'auto' (default) also searches the local "
+            "archive when one is configured, which makes voice transcripts, "
+            "recognised screenshot text and attachment names findable; 'live' "
+            "searches Telegram only; 'archive' searches the local projection only. "
+            "With no archive configured, all three behave identically."
+        )
+    ),
+]
+
 PublicFilter = Annotated[
     bool,
     Field(
@@ -76,6 +89,78 @@ LimitMessages = Annotated[
 LimitChats = Annotated[
     int,
     Field(description=f"Maximum chats to return{_RECOMMENDED_LIMIT_SUFFIX}"),
+]
+
+ActivitySince = Annotated[
+    str,
+    Field(
+        description=(
+            "Start of the window: a relative span ('24h', '7d', '90m', '2w') or an "
+            "ISO 8601 timestamp. Relative spans resolve against the current UTC "
+            "instant, so 'the last 24 hours' does not shift with local calendar days."
+        )
+    ),
+]
+
+ActivityUntil = Annotated[
+    str,
+    Field(
+        description=(
+            "End of the window as an ISO 8601 timestamp. Omit for 'up to now'. "
+            "Relative values are rejected here because they read ambiguously."
+        )
+    ),
+]
+
+ActivityAccounts = Annotated[
+    list[str],
+    Field(
+        description=(
+            "Account labels to include. One authenticated session covers exactly one "
+            "Telegram account, so a second account needs its own call with its own "
+            "token; anything unavailable is reported in coverage rather than dropped."
+        )
+    ),
+]
+
+UnreadOnly = Annotated[
+    bool,
+    Field(
+        description=(
+            "If true, return only chats Telegram currently marks unread "
+            "(unread_count above zero or an explicit unread mark)."
+        )
+    ),
+]
+
+IncludeChannels = Annotated[
+    bool,
+    Field(
+        description=(
+            "If true, include broadcast channels. Off by default: channels out-post "
+            "conversations by an order of magnitude and bury working chats."
+        )
+    ),
+]
+
+IncludeArchivedDialogs = Annotated[
+    bool,
+    Field(description="If true, also scan dialogs the owner moved to the archive folder."),
+]
+
+IncludeRunTelemetry = Annotated[
+    bool,
+    Field(
+        description=(
+            "If true, attach per-run counters (durations, call counts, archive "
+            "coverage). Counts and statuses only — never message content."
+        )
+    ),
+]
+
+LimitMessagesPerChat = Annotated[
+    int,
+    Field(description="Maximum messages returned per chat (recommended 20 or less)."),
 ]
 
 AutoExpandBatches = Annotated[
