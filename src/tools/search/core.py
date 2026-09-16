@@ -153,6 +153,7 @@ async def search_messages_impl(
     include_total_count: bool = False,
     thread_scope: ThreadScope = "auto",
     max_concurrent: int | None = _DEFAULT_MAX_CONCURRENT,
+    source: str = "auto",
 ) -> dict[str, Any]:
     """
     Unified message retrieval: search, browse, read by IDs, or list replies.
@@ -163,6 +164,10 @@ async def search_messages_impl(
 
     Args:
         max_concurrent: Max parallel SearchGlobal requests (default: 2).
+        source: Where a global search looks. "auto" (default) adds the archive
+            when one is configured, so speech and screenshots are searchable;
+            with no archive it behaves exactly as before. "live" forces Telegram
+            only, "archive" forces the local projection only.
     """
     params = _build_search_params(
         query=query,
@@ -203,7 +208,7 @@ async def search_messages_impl(
             exception=e,
         )
 
-    return await _dispatch_search_mode(
+    result = await _dispatch_search_mode(
         mode,
         params,
         query=query,
@@ -219,3 +224,57 @@ async def search_messages_impl(
         include_total_count=include_total_count,
         thread_scope=thread_scope,
     )
+
+    return await _augment_with_archive(
+        result,
+        mode=mode,
+        query=query,
+        chat_id=chat_id,
+        limit=limit,
+        min_date=min_date,
+        max_date=max_date,
+        source=source,
+    )
+
+
+async def _augment_with_archive(
+    result: dict[str, Any],
+    *,
+    mode: MessageRetrievalMode,
+    query: str | None,
+    chat_id: str | None,
+    limit: int,
+    min_date: str | None,
+    max_date: str | None,
+    source: str,
+) -> dict[str, Any]:
+    """Add archive hits to a global text search, when an archive is configured.
+
+    Applies to global search with a query only. Reading a known chat, fetching by
+    id and listing replies already have an exact answer from Telegram; widening
+    them would change well-defined behaviour for no gain.
+    """
+    if source == "live" or not isinstance(result, dict) or "messages" not in result:
+        return result
+    if chat_id is not None or not (query and query.strip()):
+        return result
+
+    from src.tools.search.archive_search import (
+        merge_search_results,
+        search_archive_messages,
+    )
+
+    archived, error = await search_archive_messages(
+        query=query,
+        limit=limit,
+        min_date=min_date,
+        max_date=max_date,
+    )
+    if error:
+        return {**result, "archive_status": error}
+    if not archived and source != "archive":
+        return result
+
+    live = [] if source == "archive" else list(result.get("messages") or [])
+    merged, stats = merge_search_results(live, archived, limit=limit)
+    return {**result, "messages": merged, "search_sources": stats}
