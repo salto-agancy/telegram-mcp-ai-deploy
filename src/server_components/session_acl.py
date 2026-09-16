@@ -35,7 +35,9 @@ _WRITE_OPERATIONS = frozenset(
         "send_rich_message",
     }
 )
-_LIST_RESULT_OPERATIONS = frozenset({"find_chats", "search_messages_globally"})
+_LIST_RESULT_OPERATIONS = frozenset(
+    {"find_chats", "search_messages_globally", "recent_activity"}
+)
 _EMPTY_LANE_CHAT_SCOPED_OPERATIONS = frozenset(
     {"get_messages", "get_media_content", "get_chat_info"}
 )
@@ -767,6 +769,21 @@ def filter_tool_result(operation_name: str, result: Any) -> Any:
         if operation_name in _EMPTY_LANE_POST_DENY_OPERATIONS:
             return _deny(operation_name, _empty_lane_deny_msg(rule))
         return result
+
+    if operation_name == "recent_activity" and isinstance(result.get("chats"), list):
+        # A batch snapshot must respect the same lane as opening chats one by one;
+        # otherwise the faster path would quietly become the wider one.
+        allowed_chats = [
+            chat
+            for chat in result["chats"]
+            if isinstance(chat, dict) and _is_chat_dict_lane_allowed(chat, rule)
+        ]
+        coverage = dict(result.get("coverage") or {})
+        removed = len(result["chats"]) - len(allowed_chats)
+        if removed:
+            coverage["chats_hidden_by_acl"] = removed
+            coverage["chats_returned"] = len(allowed_chats)
+        return {**result, "chats": allowed_chats, "coverage": coverage}
 
     if operation_name == "find_chats" and isinstance(result.get("chats"), list):
         filtered = [
