@@ -33,6 +33,7 @@ _saved_argv = sys.argv[:]
 sys.argv = [sys.argv[0] if sys.argv else "run_bench"]
 try:
     from src.client.connection import get_connected_client
+    from src.tools.activity import recent_activity_impl
     from src.tools.chat_discovery.find_chats import find_chats_impl
     from src.tools.search import search_messages_impl
     from tests.integration.bench_core import ScenarioRunner, report_json, report_table
@@ -73,7 +74,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     parser.add_argument(
         "--tool",
-        choices=["find_chats", "search_messages", "all"],
+        choices=["find_chats", "search_messages", "recent_activity", "all"],
         default="all",
         help="Which tool's scenarios to run (default: all).",
     )
@@ -160,6 +161,10 @@ async def _main(argv: list[str] | None = None) -> int:
         impl_map={
             "find_chats": find_chats_impl,
             "search_messages": search_messages_impl,
+            # recent_activity resolves its own client through the gateway rather
+            # than taking one positionally, so the runner's client argument is
+            # accepted and dropped here instead of changing the runner contract.
+            "recent_activity": lambda _client, **kw: recent_activity_impl(**kw),
         },
         floodwait_max_retry=args.floodwait_max_retry,
         floodwait_cap=args.floodwait_cap,

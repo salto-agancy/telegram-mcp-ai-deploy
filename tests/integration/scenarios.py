@@ -33,6 +33,11 @@ def _sm(**params) -> dict:
     return {"tool": "search_messages", "params": params}
 
 
+def _ra(**params) -> dict:
+    """Shorthand for a recent_activity scenario params dict."""
+    return {"tool": "recent_activity", "params": params}
+
+
 # ── find_chats scenarios ────────────────────────────────────────────────────
 # Code paths: global (single/multi), date (browse/search), folder (include/flags)
 
@@ -148,11 +153,56 @@ SEARCH_SCENARIOS: list[BenchScenario] = [
     ),
 ]
 
+# ── recent_activity scenarios ───────────────────────────────────────────────
+# The workload these exist for: a batch snapshot instead of discovering chats and
+# then opening each one. Iterations are deliberately few and spaced — Telegram
+# answers a rapid series of reads with FloodWait, and a burst measures its rate
+# limiter rather than this code path.
+
+RECENT_ACTIVITY_SCENARIOS: list[BenchScenario] = [
+    BenchScenario(
+        name="activity_24h",
+        description=(
+            "The main case: one day of activity across conversations, the "
+            "replacement for discover-then-open-each-chat."
+        ),
+        iterations=3,
+        cooldown=60.0,
+        smoke=True,
+        **_ra(since="24h", limit_chats=50, limit_messages_per_chat=20),
+    ),
+    BenchScenario(
+        name="activity_24h_unread_only",
+        description="Only chats Telegram currently marks unread.",
+        iterations=2,
+        cooldown=60.0,
+        **_ra(since="24h", limit_chats=50, unread_only=True),
+    ),
+    BenchScenario(
+        name="activity_7d_private",
+        description="A wider window narrowed to private chats.",
+        iterations=2,
+        cooldown=60.0,
+        **_ra(since="7d", chat_type="private", limit_chats=50),
+    ),
+    BenchScenario(
+        name="activity_24h_with_channels",
+        description=(
+            "Channels opted in — measures how much a noisy feed costs when it is "
+            "included on purpose."
+        ),
+        iterations=2,
+        cooldown=60.0,
+        **_ra(since="24h", limit_chats=50, include_channels=True),
+    ),
+]
+
 # ── Combined index ──────────────────────────────────────────────────────────
 
 BY_TOOL: dict[str, list[BenchScenario]] = {
     "find_chats": FIND_CHATS_SCENARIOS,
     "search_messages": SEARCH_SCENARIOS,
+    "recent_activity": RECENT_ACTIVITY_SCENARIOS,
 }
 
 
@@ -166,7 +216,8 @@ def get_scenarios(
     Parameters
     ----------
     tool:
-        ``"find_chats"``, ``"search_messages"``, or ``None`` for all.
+        ``"find_chats"``, ``"search_messages"``, ``"recent_activity"``,
+        or ``None`` for all.
     pattern:
         Optional substring or simple pattern to filter scenario names.
     smoke_only:
