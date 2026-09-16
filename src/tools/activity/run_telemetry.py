@@ -51,6 +51,14 @@ class RetrievalRun:
     transcriptions_run_in_request: int = 0
     flood_wait_events: int = 0
     flood_wait_seconds: int = 0
+    # Reads that took long enough to indicate waiting on Telegram rather than
+    # working. Counted separately from flood_wait_events because the client
+    # library absorbs short rate limits without raising: see STALL_SECONDS in
+    # live_messages.py. Reporting only the explicit events would claim a clean
+    # run while the request sat waiting.
+    stalled_reads: int = 0
+    stalled_seconds: float = 0.0
+    slowest_read_seconds: float = 0.0
     errors: int = 0
 
     archive_lag_seconds_max: int | None = None
@@ -67,6 +75,15 @@ class RetrievalRun:
             self.phase_seconds[name] = round(
                 self.phase_seconds.get(name, 0.0) + elapsed, 4
             )
+
+    def note_read_duration(self, seconds: float) -> None:
+        """Record how long one live chat read took."""
+        from src.tools.activity.live_messages import STALL_SECONDS
+
+        self.slowest_read_seconds = max(self.slowest_read_seconds, round(seconds, 3))
+        if seconds >= STALL_SECONDS:
+            self.stalled_reads += 1
+            self.stalled_seconds = round(self.stalled_seconds + seconds, 3)
 
     def note_media(self, media: Any) -> None:
         """Fold one message's enrichment status into the counters."""
@@ -114,6 +131,13 @@ class RetrievalRun:
         }
         if self.chats_stale_topped_up:
             record["chats_stale_topped_up"] = self.chats_stale_topped_up
+        if self.slowest_read_seconds:
+            record["slowest_live_read_seconds"] = self.slowest_read_seconds
+        if self.stalled_reads:
+            record["stalled_reads"] = {
+                "count": self.stalled_reads,
+                "seconds": round(self.stalled_seconds, 2),
+            }
         if self.flood_wait_events:
             record["flood_wait"] = {
                 "events": self.flood_wait_events,

@@ -474,3 +474,38 @@ def test_ambiguous_archive_without_configuration_reads_nothing():
     from src.tools.activity.recent import _pick_archive_account
 
     assert _pick_archive_account(["personal", "work"], [], "stranger") is None
+
+
+# ── waiting that the client library hides ───────────────────────────────────
+
+
+def test_a_long_read_is_recorded_as_a_stall():
+    """Telethon sleeps off a short FloodWait and retries without raising.
+
+    Measured on a real account: after roughly sixty rapid reads Telegram answered
+    every request with FloodWait 29s, the exception never surfaced, and telemetry
+    reported a clean run that merely looked slow. Counting elapsed time is the
+    only honest signal available.
+    """
+    from src.tools.activity.run_telemetry import RetrievalRun
+
+    run = RetrievalRun()
+    run.note_read_duration(0.2)
+    run.note_read_duration(29.4)
+    record = run.to_dict()
+
+    assert record["stalled_reads"]["count"] == 1
+    assert record["stalled_reads"]["seconds"] >= 29
+    assert record["slowest_live_read_seconds"] == 29.4
+
+
+def test_fast_reads_report_no_stall():
+    from src.tools.activity.run_telemetry import RetrievalRun
+
+    run = RetrievalRun()
+    for _ in range(10):
+        run.note_read_duration(0.3)
+    record = run.to_dict()
+
+    assert "stalled_reads" not in record
+    assert record["slowest_live_read_seconds"] == 0.3
