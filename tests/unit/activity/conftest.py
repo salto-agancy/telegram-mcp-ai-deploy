@@ -12,7 +12,11 @@ import pytest
 
 from src.archive.models import ArchiveChat, ArchiveMedia, ArchiveMessage
 
-NOW = datetime(2026, 9, 16, 18, 0, tzinfo=UTC)
+# Anchored to the moment the test runs, not to a fixed date. Freshness is judged
+# against the real clock inside the implementation, so a frozen anchor made these
+# fixtures look stale an hour after they were written and quietly turned an
+# archive-served test into a live-fallback one.
+NOW = datetime.now(UTC).replace(microsecond=0)
 
 
 def iso(minutes_ago: int) -> str:

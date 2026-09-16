@@ -429,3 +429,48 @@ async def test_telemetry_carries_no_content(patched):
     blob = repr(result["telemetry"])
     assert "confidential" not in blob
     assert "Secret Client Chat" not in blob
+
+
+# ── choosing which archived account a session may read ──────────────────────
+
+
+def test_configured_label_wins_over_username_matching():
+    """The two naming schemes never agree on their own.
+
+    An archive labels accounts the way its operator thinks about them; a session
+    knows itself by Telegram username. A live run with no configured label read
+    the archive zero times while reporting success, and every message came from
+    live Telegram instead.
+    """
+    from src.tools.activity.recent import _pick_archive_account
+
+    assert _pick_archive_account(
+        ["personal", "work"], [], "real_username", configured="personal"
+    ) == "personal"
+
+
+def test_configured_label_that_is_not_in_the_archive_reads_nothing():
+    from src.tools.activity.recent import _pick_archive_account
+
+    assert _pick_archive_account(
+        ["personal", "work"], [], "someone", configured="missing"
+    ) is None
+
+
+def test_username_match_still_works_without_configuration():
+    from src.tools.activity.recent import _pick_archive_account
+
+    assert _pick_archive_account(["alice", "bob"], [], "alice") == "alice"
+
+
+def test_single_account_archive_needs_no_configuration():
+    from src.tools.activity.recent import _pick_archive_account
+
+    assert _pick_archive_account(["only"], [], "whoever") == "only"
+
+
+def test_ambiguous_archive_without_configuration_reads_nothing():
+    """Guessing between two accounts would mean serving someone else's messages."""
+    from src.tools.activity.recent import _pick_archive_account
+
+    assert _pick_archive_account(["personal", "work"], [], "stranger") is None
