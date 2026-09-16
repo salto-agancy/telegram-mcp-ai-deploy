@@ -156,12 +156,76 @@ Counts are fetched via Telethon full-info requests and reflect current values.
 {"tool": "get_chat_info", "params": {"chat_id": "-1001234567890", "topics_limit": 50}}
 ```
 
+### recent_activity
+**One prepared snapshot of recent activity, instead of opening every chat**
+
+```typescript
+recent_activity(
+  since?: string = "24h",              // "24h", "7d", "90m", "2w", or an ISO timestamp
+  until?: string,                      // ISO timestamp; omit for "up to now"
+  accounts?: string[],                 // labels; one session covers one account
+  chat_type?: string,                  // "private,group,bot,channel"
+  limit_chats?: number = 50,           // max 200
+  limit_messages_per_chat?: number = 20,  // max 100
+  unread_only?: boolean = false,       // only chats Telegram marks unread
+  include_channels?: boolean = false,  // broadcast feeds are excluded by default
+  include_archived_dialogs?: boolean = false,
+  include_telemetry?: boolean = false  // per-run counters; never content
+)
+```
+
+Replaces the discovery-then-open-each-chat pattern. Dialog state is read live in a
+single pass; message content comes from the archive when one is configured, and
+only chats the archive does not cover — or has not caught up with — are topped up
+live.
+
+**Per chat:** `id`, `type`, `title`, `unread_count`, `read_inbox_max_id`,
+`read_outbox_max_id`, `unread_mentions_count`, `last_activity_date`, `messages`,
+`last_incoming`, `last_outgoing`, `outgoing_after_incoming`, `has_more`, `source`
+(`archive` / `live` / `mixed`), and `archive.lag_seconds` when archived.
+
+**Per message:** `id`, `date`, `is_outgoing`, `unread`, `sender_id`,
+`reply_to_msg_id`, `is_service`, `text`, and `media` with attachment facts plus
+`transcription_status` / `transcription` and `media_text_status` / `media_text`.
+
+**Unread is Telegram's own rule, applied deterministically:** an incoming message
+with `id > read_inbox_max_id`. Outgoing messages are never unread. When the read
+marker is missing, the message is not claimed to be unread.
+
+**Whether a message needs a reply is not decided here.** The snapshot reports what
+happened — who wrote, what is unread, whether an outgoing message followed an
+incoming one — and leaves the conclusion to the caller.
+
+**Voice without a ready transcript is `pending`, never omitted.** A message whose
+audio has not been processed yet must not look like silence.
+
+**Coverage is explicit.** `coverage` reports chats discovered, how many came from
+the archive, how many were topped up live, whether the dialog scan was truncated,
+how many voice or image enrichments are still pending, and — when an account was
+requested that this session cannot read — which ones.
+
+```javascript
+// Last 24 hours across conversations
+{"tool": "recent_activity", "params": {"since": "24h"}}
+
+// Only what Telegram currently marks unread, groups excluded
+{"tool": "recent_activity", "params": {"since": "24h", "unread_only": true, "chat_type": "private"}}
+
+// A specific window, with run counters for benchmarking
+{"tool": "recent_activity", "params": {
+  "since": "2026-09-15T00:00:00+00:00",
+  "until": "2026-09-16T00:00:00+00:00",
+  "include_telemetry": true
+}}
+```
+
 ### search_messages_globally
 **Search messages across all Telegram chats**
 
 ```typescript
 search_messages_globally(
   query: str,                    // Search terms (comma-separated, required)
+  source?: "auto"|"live"|"archive" = "auto",  // see "Searching beyond message text"
   limit?: number = 50,          // Max results
   chat_type?: string, // Filter by chat type ('private','group','channel', comma-separated for multiple)
   public?: boolean,             // Filter by public discoverability (true=with username, false=without username). Never applies to private chats.
@@ -211,6 +275,22 @@ search_messages_globally(
   "chat_type": "private,group"
 }}
 ```
+
+#### Searching beyond message text
+
+Telegram's own search index only covers message text. A phrase spoken in a voice
+message, or written on a screenshot, is invisible to it — the words exist, but not
+in any field Telegram indexes.
+
+With an archive configured (see [ARCHIVE.md](ARCHIVE.md)), `source: "auto"` — the
+default — searches both and merges the results: voice transcripts, recognised
+image text and attachment names become findable, while live search still reaches
+chats the archive does not cover. Each result carries `source` (`live`, `archive`
+or `both`) and archive hits carry `matched_in`, so a caller can tell "she said it
+out loud" from "it was written on a screenshot".
+
+With no archive configured, all three `source` values behave identically to the
+previous live-only behaviour.
 
 ## 2. Read
 
