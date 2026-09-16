@@ -229,6 +229,52 @@ class ServerConfig(BaseSettings):
         ),
     )
 
+    # Archive backend (optional): content retrieval from a locally maintained
+    # projection instead of live Telegram. Dialog state is never read from here.
+    archive_dsn: str = Field(
+        default="",
+        validation_alias=AliasChoices("archive_dsn", "ARCHIVE_DSN"),
+        description=(
+            "PostgreSQL DSN of the message archive used by recent_activity and "
+            "archive-backed search. Empty (default) keeps every read live."
+        ),
+    )
+
+    archive_pool_size: int = Field(
+        default=4,
+        ge=1,
+        le=32,
+        validation_alias=AliasChoices("archive_pool_size", "ARCHIVE_POOL_SIZE"),
+        description="Maximum pooled connections to the archive database",
+    )
+
+    archive_statement_timeout_ms: int = Field(
+        default=15000,
+        ge=100,
+        le=120000,
+        validation_alias=AliasChoices(
+            "archive_statement_timeout_ms", "ARCHIVE_STATEMENT_TIMEOUT_MS"
+        ),
+        description=(
+            "Per-statement timeout for archive queries; a slow archive must fail "
+            "fast into live fallback rather than hold the request open"
+        ),
+    )
+
+    archive_max_freshness_seconds: int = Field(
+        default=5400,
+        ge=60,
+        le=86400,
+        validation_alias=AliasChoices(
+            "archive_max_freshness_seconds", "ARCHIVE_MAX_FRESHNESS_SECONDS"
+        ),
+        description=(
+            "How stale a chat's archived copy may be before recent_activity "
+            "tops it up from live Telegram (default 90 minutes, i.e. one missed "
+            "hourly collection plus margin)"
+        ),
+    )
+
     acl_enabled: bool = Field(
         default=False,
         validation_alias=AliasChoices("acl_enabled", "ACL_ENABLED"),

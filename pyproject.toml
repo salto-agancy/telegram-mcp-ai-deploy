@@ -32,6 +32,10 @@ dependencies = [
     "qrcode[pil]",
 ]
 
+[project.optional-dependencies]
+# Archive-backed retrieval. Without it the gateway runs live-only, as before.
+archive = ["asyncpg>=0.29"]
+
 [project.urls]
 Homepage = "https://github.com/salto-agancy/telegram-mcp-ai-deploy"
 Repository = "https://github.com/salto-agancy/telegram-mcp-ai-deploy"
