@@ -240,6 +240,19 @@ class ServerConfig(BaseSettings):
         ),
     )
 
+    archive_account: str = Field(
+        default="",
+        validation_alias=AliasChoices("archive_account", "ARCHIVE_ACCOUNT"),
+        description=(
+            "Which account label inside the archive belongs to this session. "
+            "Needed because the archive labels accounts the operator's way "
+            "(\"personal\", \"work\") while the session knows itself by Telegram "
+            "username or user id, and those never match. Empty falls back to "
+            "matching by username, then to the sole account when the archive "
+            "holds exactly one."
+        ),
+    )
+
     archive_pool_size: int = Field(
         default=4,
         ge=1,
