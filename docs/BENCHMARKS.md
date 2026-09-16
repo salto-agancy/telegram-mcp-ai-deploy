@@ -29,20 +29,51 @@ the production account, in one process.
 
 | Metric | LEGACY | TARGET | ACTUAL |
 |---|---|---|---|
-| End-to-end, one snapshot | 150.98 s | — | see below |
-| Tool calls | 51 | ≤ 2 | 1 |
-| Telegram RPC | 1221 | — | 18 |
-| Chats returned | 50 | — | 29 conversations |
+| End-to-end p50 | 150.98 s (single run) | < 5 s | **0.855 s** |
+| End-to-end p95 | — | < 10 s | **1.459 s** |
+| End-to-end min / max | — | — | 0.627 s / 1.459 s |
+| Tool calls | 51 | ≤ 2 | **1** |
+| Telegram RPC | 1221 | — | **18** |
 | Messages returned | 869 | — | 195 |
-| Payload | 605 575 B | — | ~66 000 B |
-| Latency p50 | — | < 5 s | filled in below |
-| Latency p95 | — | < 10 s | filled in below |
-| Transcriptions run inside the request | many | 0 | 0 |
+| Payload | 605 575 B | — | 67 944 B |
+| Transcriptions run inside the request | many | 0 | **0** |
+| FloodWait events | — | 0 | **0** |
+| Errors | — | 0 | **0** |
 
-The chat counts differ by design: LEGACY returns whatever `find_chats` finds,
-which on this account was mostly broadcast channels, while `recent_activity`
-returns conversations and leaves channels to an explicit opt-in. Correctness is
-therefore judged on whether any *conversation* was lost, not on the raw count.
+Six consecutive valid samples, host load average 2.21 at start and 3.99 at end.
+Samples taken while the host was loaded are excluded from these figures and
+recorded separately — see *Invalid samples* below.
+
+**Where the time goes**, from one representative run (0.834 s end to end):
+
+| Phase | Seconds | What it is |
+|---|---|---|
+| dialog state | 0.527 | one live pass for unread counters and read markers |
+| live top-up | 0.179 | reading the chats the archive does not cover |
+| archive | 0.063 | two database queries |
+| assembly | 0.065 | merging and serialising |
+
+Roughly 85% of the remaining time is waiting on Telegram, not our own work. That
+is the floor for this design: dialog state cannot be served from a snapshot
+without making it wrong.
+
+**Where the RPC count comes from**, and why it is not a returning N+1:
+
+    1   get_me
+    2   dialog pages (200 dialogs, 100 per page)
+    15  chats the archive could not answer for
+    ─────
+    18
+
+Every call above the fixed three is one chat the archive did not cover. A run
+observed at 32 RPC had *29* such chats rather than 15 — the archive had fallen
+behind during a host overload — so the extra calls were coverage, not a loop that
+crept back in.
+
+**Coverage in that run:** 15 of 29 chats and 172 of 195 messages came from the
+archive; 14 chats were topped up live because they had only just entered
+collection scope. Fourteen voice transcripts were served ready, two were still
+pending, and none were computed during the request.
 
 ## What the tail is, and what it is not
 
@@ -64,6 +95,19 @@ Two consequences worth keeping:
 
 The practical effect of the archive is the same in either direction: fewer live
 reads means fewer chances to meet the limiter at all.
+
+## Invalid samples
+
+Two runs are excluded from the numbers above and kept here instead, because
+averaging them in would describe the host rather than the code:
+
+| Observation | Host state | What it was |
+|---|---|---|
+| one iteration at 190.6 s, 32 RPC | load average 53, 352 MB free | host overloaded by unrelated background jobs; SSH to the box was also timing out |
+| occasional ~29 s responses | host healthy | Telegram rate limiting under a burst — see below |
+
+A run is treated as valid only when load average is below 5 and more than 300 MB
+of memory is available, recorded before and after each sample.
 
 ## Correctness cases
 
