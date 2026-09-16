@@ -25,6 +25,7 @@ if str(_REPO_ROOT) not in sys.path:
 _saved_argv = sys.argv[:]
 sys.argv = [sys.argv[0] if sys.argv else "test_bench_scenarios"]
 try:
+    from src.tools.activity import recent_activity_impl
     from src.tools.chat_discovery.find_chats import find_chats_impl
     from src.tools.search import search_messages_impl
     from tests.integration.scenarios import get_scenarios
@@ -37,6 +38,9 @@ finally:
 _IMPL_MAP: dict[str, callable] = {
     "find_chats": find_chats_impl,
     "search_messages": search_messages_impl,
+    # recent_activity resolves its own client through the gateway, so the
+    # positional client these cases pass is accepted and dropped.
+    "recent_activity": lambda _client, **kw: recent_activity_impl(**kw),
 }
 
 _SCENARIO_CASES = []
