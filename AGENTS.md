@@ -54,6 +54,37 @@ isolated account and are never run against an operator's Telegram implicitly.
 - If a real credential entered Git, stop: rotate it, purge all reachable history, rescan,
   and only then push. Do not merely delete it in a later commit.
 
+## Retrieval invariants
+
+These hold for `recent_activity`, archive-backed search and anything built on them.
+They exist because each was violated at some point and produced a confidently wrong
+answer.
+
+1. **Unread state is read live, never from a stored copy.** Read markers change the
+   moment the owner opens a chat. Serve them from a snapshot and the gateway states
+   something false with full authority.
+2. **Unread is derived, not guessed:** an incoming message with
+   `id > read_inbox_max_id`. Outgoing is never unread. A missing marker means "not
+   known to be unread", not "unread".
+3. **Whether a message deserves a reply is not decided here.** Report direction,
+   read state and ordering; the conclusion belongs to the layer above. "The other
+   person wrote last" and "a reply is owed" are different claims.
+4. **Enrichment that is not ready says so.** A voice message without a transcript is
+   `pending`; a picture that was examined and held no text is `skipped`. Never let
+   either collapse into silence — an unprocessed voice message must not read as a
+   message that was never sent.
+5. **Speech-to-text and image recognition never run inside a retrieval request.**
+   They belong to the background pipeline. Measured cost of getting this wrong:
+   30 seconds of a 33-second response, for transcripts that already existed.
+6. **Coverage is stated, not assumed.** Say how many chats came from the archive,
+   how many were topped up live, what was truncated and what is still pending.
+7. **Archive failure degrades to live and says so.** Never fail a request because a
+   convenience layer is unavailable, and never present live results as archived.
+8. **A batch snapshot respects the same ACL lane as opening chats one by one.**
+   The faster path must not become the wider one.
+9. **A raw Telegram identity is not a canonical person.** No identity resolution,
+   client mapping or obligation extraction inside this gateway.
+
 ## Changing MCP tools
 
 1. Prefer extending a coherent existing tool over adding many narrow tools.

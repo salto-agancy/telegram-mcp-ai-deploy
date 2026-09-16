@@ -7,6 +7,20 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ### Added
 
+- `recent_activity`: one read-only batch snapshot of recent activity across chats,
+  replacing the discover-then-open-each-chat pattern. Returns Telegram's own unread
+  state (`unread_count`, `read_inbox_max_id`, `read_outbox_max_id`) alongside the
+  messages in the window, direction, reply links, attachment metadata and ready
+  voice transcripts. Whether a message needs a reply is left to the caller.
+- Optional archive backend (`ARCHIVE_DSN`, extra `archive`): answers content
+  questions from a locally maintained projection so ordinary retrieval neither
+  re-reads Telegram nor re-runs speech-to-text. Disabled by default; unread state
+  is always read live. See `docs/ARCHIVE.md`.
+- `search_messages_globally` gained `source` (`auto` / `live` / `archive`). With an
+  archive configured, `auto` also searches voice transcripts, recognised image text
+  and attachment names, which Telegram's own index does not cover. Without one,
+  behaviour is unchanged.
+
 ### Changed
 
 ### Fixed
