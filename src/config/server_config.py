@@ -288,6 +288,28 @@ class ServerConfig(BaseSettings):
         ),
     )
 
+    # Shared MCP call journal (salto_crm.mcp_tool_audit), written by every MCP
+    # service so "which tool is used, and what fails" has one answer instead of
+    # one per product. Off unless a DSN is given.
+    audit_dsn: str = Field(
+        default="",
+        validation_alias=AliasChoices("audit_dsn", "AUDIT_DSN"),
+        description=(
+            "PostgreSQL DSN of the shared MCP call journal. Empty (default) "
+            "records nothing; no tool call is ever blocked by this."
+        ),
+    )
+
+    audit_service: str = Field(
+        default="telegram-mcp",
+        validation_alias=AliasChoices("audit_service", "AUDIT_SERVICE"),
+        description=(
+            "Value written to the journal's service column. Deployments running "
+            "one container per Telegram account set it per account "
+            "(telegram-personal, telegram-work) so the two are separable."
+        ),
+    )
+
     acl_enabled: bool = Field(
         default=False,
         validation_alias=AliasChoices("acl_enabled", "ACL_ENABLED"),
@@ -441,6 +463,9 @@ class ServerConfig(BaseSettings):
 
         if self.prefix_mcp_tools_with_account:
             logger.info("🏷️ Account-prefixed MCP tool names enabled")
+
+        if self.audit_dsn:
+            logger.info("📓 MCP call journal enabled as '%s'", self.audit_service)
 
         # Mark as logged to prevent repeated messages
         self._config_logged = True
