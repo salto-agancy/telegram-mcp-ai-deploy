@@ -83,42 +83,80 @@ async def search_archive_messages(
     return [_hit_to_message(h) for h in hits], None
 
 
+# Smallest share of the answer reserved for hits only the archive can produce.
+# Without a reservation they are appended after every live result and cut off by
+# the limit: measured on a real query, live filled all ten slots and the one
+# message that actually contained the spoken phrase was dropped entirely.
+ARCHIVE_ONLY_MIN_SHARE = 3
+
+
 def merge_search_results(
     live: list[dict[str, Any]],
     archived: list[dict[str, Any]],
     *,
     limit: int,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
-    """Combine both channels without duplicating a message.
+    """Combine both channels without duplicating a message, and without letting
+    either crowd the other out.
 
     Where the same message exists on both sides, the archived copy wins: it is the
-    one carrying the transcript and the recognised image text. Live-only results
-    keep their place, because the archive does not cover every chat.
+    one carrying the transcript and the recognised image text.
+
+    Archive-only hits get a reserved share of the limit rather than a place at the
+    end of the queue. They are not merely extra results — they are the only answer
+    to questions live search cannot answer at all, because Telegram indexes message
+    text and nothing else. A phrase spoken in a voice message, or written on a
+    screenshot, exists in exactly one of these two channels; appending it after ten
+    live matches means the caller never sees it.
+
+    Live results keep priority within their share, since Telegram's own relevance
+    is good for text, and the archive does not cover every chat.
     """
     merged: dict[tuple[Any, Any], dict[str, Any]] = {}
-    order: list[tuple[Any, Any]] = []
+    live_order: list[tuple[Any, Any]] = []
+    archive_order: list[tuple[Any, Any]] = []
 
     for message in live:
         key = _message_key(message)
         if key not in merged:
-            order.append(key)
+            live_order.append(key)
         merged[key] = {**message, "source": "live"}
 
-    archive_only = 0
     for message in archived:
         key = _message_key(message)
         if key in merged:
             merged[key] = {**merged[key], **message, "source": "both"}
         else:
-            order.append(key)
+            if key not in merged:
+                archive_order.append(key)
             merged[key] = message
-            archive_only += 1
 
-    combined = [merged[k] for k in order][:limit]
+    archive_only = len(archive_order)
+    reserved = min(archive_only, max(1, limit // ARCHIVE_ONLY_MIN_SHARE))
+    live_slots = max(0, limit - reserved)
+
+    # Interleave so neither channel is silently truncated: live keeps the head of
+    # the answer, archive-only hits keep their reserved places.
+    kept_live = live_order[:live_slots]
+    kept_archive = archive_order[:reserved]
+    combined_keys = kept_live + kept_archive
+
+    # Any room left over (one channel had fewer hits than its share) goes to
+    # whatever is still waiting, so a reservation never shrinks the answer.
+    if len(combined_keys) < limit:
+        spare = limit - len(combined_keys)
+        leftovers = live_order[live_slots:] + archive_order[reserved:]
+        combined_keys += leftovers[:spare]
+
+    combined = [merged[k] for k in combined_keys]
     stats = {
         "live": len(live),
         "archive": len(archived),
         "archive_only": archive_only,
+        "archive_only_returned": sum(
+            1 for k in combined_keys if k in set(kept_archive) | set(archive_order)
+            and merged[k].get("source") == "archive"
+        ),
         "returned": len(combined),
     }
     return combined, stats

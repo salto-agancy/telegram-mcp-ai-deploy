@@ -75,3 +75,69 @@ def test_messages_from_different_chats_with_equal_ids_stay_separate():
         [_live(42, 10)], [_archived(42, 11)], limit=10
     )
     assert len(merged) == 2
+
+
+# ── neither channel may crowd the other out ─────────────────────────────────
+
+
+def test_archive_only_hit_survives_a_full_page_of_live_results():
+    """The failure this rule exists for, reproduced from production.
+
+    A search for a phrase spoken in a voice message returned ten live matches and
+    dropped the one message that actually contained the phrase: archive-only hits
+    were appended after every live result and cut off by the limit. Live search
+    cannot answer that question at all — Telegram indexes message text and nothing
+    else — so the only useful result was the one discarded.
+    """
+    live = [_live(i, 10) for i in range(10)]
+    archived = [_archived(732337, 11, matched_in=["voice_transcription"])]
+
+    merged, stats = merge_search_results(live, archived, limit=10)
+
+    ids = [m["id"] for m in merged]
+    assert 732337 in ids, "the only message answering the query was dropped"
+    assert len(merged) == 10
+    assert stats["archive_only"] == 1
+
+
+def test_live_keeps_the_head_of_the_answer():
+    """Telegram's own relevance is good for text, so live stays first."""
+    live = [_live(i, 10) for i in range(10)]
+    archived = [_archived(900 + i, 11) for i in range(5)]
+
+    merged, _ = merge_search_results(live, archived, limit=9)
+    ids = [m["id"] for m in merged]
+
+    assert ids[0] == 0, "live result should lead"
+    assert any(i >= 900 for i in ids), "archive-only hits must still appear"
+
+
+def test_reservation_never_shrinks_the_answer():
+    """A reserved share must not leave empty slots when one side has few hits."""
+    live = [_live(i, 10) for i in range(10)]
+    merged, _ = merge_search_results(live, [], limit=10)
+    assert len(merged) == 10
+
+    archived = [_archived(900 + i, 11) for i in range(10)]
+    merged, _ = merge_search_results([], archived, limit=10)
+    assert len(merged) == 10
+
+
+def test_many_archive_hits_do_not_push_live_out_entirely():
+    live = [_live(i, 10) for i in range(10)]
+    archived = [_archived(900 + i, 11) for i in range(50)]
+
+    merged, _ = merge_search_results(live, archived, limit=12)
+    ids = [m["id"] for m in merged]
+
+    assert sum(1 for i in ids if i < 10) >= 8, "live must keep most of its share"
+    assert sum(1 for i in ids if i >= 900) >= 4, "archive must keep its reservation"
+
+
+def test_a_small_limit_still_leaves_room_for_the_archive():
+    """With limit 3 the reservation must not round down to zero."""
+    live = [_live(i, 10) for i in range(3)]
+    archived = [_archived(732337, 11, matched_in=["voice_transcription"])]
+
+    merged, _ = merge_search_results(live, archived, limit=3)
+    assert 732337 in [m["id"] for m in merged]
