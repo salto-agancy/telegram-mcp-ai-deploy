@@ -6,8 +6,11 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+# Один прогон за раз: таймер и ручной запуск наложились друг на друга, и вывод
+# двух прогонов перемешался так, что откат и успех оказались в одном логе.
+ExecStartPre=/usr/bin/flock -n /run/telegram-mcp-autoupdate.lock /bin/true
 WorkingDirectory=/opt/telegram-mcp-v1
-ExecStart=/opt/telegram-mcp-v1/scripts/auto_update.sh
+ExecStart=/usr/bin/flock -w 60 /run/telegram-mcp-autoupdate.lock /opt/telegram-mcp-v1/scripts/auto_update.sh
 # Пересборка образа на двух ядрах занимает минуты; аккаунты перезапускаются по
 # очереди и каждый ждёт своего health до 100 секунд.
 TimeoutStartSec=2700

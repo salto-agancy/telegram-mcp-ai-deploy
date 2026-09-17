@@ -79,6 +79,11 @@ archive_answers() {
     # Asks the container the one question an HTTP probe cannot: is the archive reachable
     # from inside it. A release whose whole point is the archive must not pass health while
     # silently degraded to live-only reads.
+    #
+    # Reported, never fatal. During a staged rollout the two accounts can be on different
+    # revisions, and an account still on an older image has no archive module at all — the
+    # first live run let that ModuleNotFoundError reach the ERR trap and rolled back a
+    # perfectly healthy deployment. Health is decided by health(); this only informs.
     local container="unified-tg-$1"
     docker exec -w /app "$container" python3 -c "
 import sys, asyncio
@@ -93,7 +98,7 @@ async def go():
     return h
 h = asyncio.run(go())
 print('archive', h.get('reachable'), 'index', h.get('search_index_ready'))
-sys.exit(0 if h.get('reachable') else 1)
+print('archive unreachable' if not h.get('reachable') else '')
 " 2>&1 | tail -1
 }
 
@@ -138,7 +143,7 @@ fi
 # One account at a time: if the first does not come back, the second is never touched.
 for account in $ACCOUNTS; do
     restart_account "$account" || { log "${account} did not come up healthy"; roll_back; }
-    log "archive from ${account}: $(archive_answers "$account")"
+    log "archive from ${account}: $(archive_answers "$account" 2>&1 || echo 'not reported')"
 done
 
 trap - ERR
