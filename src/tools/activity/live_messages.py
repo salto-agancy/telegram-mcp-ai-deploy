@@ -33,6 +33,15 @@ DEFAULT_CONCURRENCY = 4
 # what was observed rather than a guess at the cause.
 STALL_SECONDS = 5.0
 
+# A single slow chat must not decide how long the whole request takes. Measured
+# on the work account with channels included: one channel read took 30.1s and
+# the answer took 31.3s, while every other chat was already done. The per-chat
+# timeout bounds that one read; the phase budget bounds the sum of them. What
+# does not fit is reported as unfinished, never returned as an empty chat that
+# looks like "nothing happened there".
+PER_READ_TIMEOUT_SECONDS = 8.0
+TOPUP_BUDGET_SECONDS = 20.0
+
 _VOICE_ATTRS = ("voice", "round", "audio")
 
 
@@ -175,30 +184,58 @@ async def fetch_many(
     limit: int,
     concurrency: int = DEFAULT_CONCURRENCY,
     run: Any = None,
+    per_read_timeout: float = PER_READ_TIMEOUT_SECONDS,
+    budget_seconds: float = TOPUP_BUDGET_SECONDS,
 ) -> dict[int, tuple[list[ArchiveMessage], bool, str | None]]:
-    """Read several chats with bounded concurrency."""
+    """Read several chats with bounded concurrency, time and patience."""
     semaphore = asyncio.Semaphore(max(1, concurrency))
 
     async def one(cid: int):
         async with semaphore:
-            return cid, await fetch_chat_window(
-                client,
-                chat_id=cid,
-                account=account,
-                since_iso=since_iso,
-                until_iso=until_iso,
-                limit=limit,
-                run=run,
+            return cid, await asyncio.wait_for(
+                fetch_chat_window(
+                    client,
+                    chat_id=cid,
+                    account=account,
+                    since_iso=since_iso,
+                    until_iso=until_iso,
+                    limit=limit,
+                    run=run,
+                ),
+                timeout=per_read_timeout,
             )
 
-    results = await asyncio.gather(*(one(c) for c in chat_ids), return_exceptions=True)
+    tasks = {asyncio.ensure_future(one(c)): c for c in chat_ids}
+    done, pending = await asyncio.wait(tasks, timeout=budget_seconds)
+
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+        unfinished = [tasks[t] for t in pending]
+        if run is not None:
+            run.live_topup_unfinished.extend(unfinished)
+        logger.warning(
+            "live top-up budget of %.1fs spent, %d chat(s) left unread",
+            budget_seconds,
+            len(unfinished),
+        )
+
     out: dict[int, tuple[list[ArchiveMessage], bool, str | None]] = {}
-    for item in results:
-        if isinstance(item, BaseException):
-            if run is not None:
-                run.errors += 1
-            logger.exception("live top-up task failed", exc_info=item)
+    for task in done:
+        error = task.exception()
+        if error is not None:
+            cid = tasks[task]
+            if isinstance(error, asyncio.TimeoutError):
+                # One chat ran out of its own time. The others still answer.
+                if run is not None:
+                    run.live_topup_unfinished.append(cid)
+                logger.warning("live read of chat %s exceeded %.1fs", cid, per_read_timeout)
+            else:
+                if run is not None:
+                    run.errors += 1
+                logger.exception("live top-up task failed", exc_info=error)
             continue
-        cid, payload = item
+        cid, payload = task.result()
         out[cid] = payload
     return out

@@ -263,6 +263,7 @@ class PostgresArchiveBackend:
         since: str | None = None,
         until: str | None = None,
         media_kinds: list[str] | None = None,
+        match_in: list[str] | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[ArchiveSearchHit]:
@@ -271,6 +272,12 @@ class PostgresArchiveBackend:
         ``matched_in`` reports which channel produced the hit — message text,
         voice transcript, attachment name or recognised image text — so a caller
         can tell "she said it out loud" from "it was written on a screenshot".
+
+        ``match_in`` turns that report into a filter. Without it "find where they
+        said it in a voice message" cannot be expressed: typed messages outnumber
+        transcripts by two orders of magnitude and fill the page before a single
+        transcript appears. Measured on the owner's archive: 12 051 transcripts
+        existed and none reached the first fifty results for a common word.
         """
         pool = await self._get_pool()
         sql = f"""
@@ -299,13 +306,26 @@ class PostgresArchiveBackend:
               AND ($5::text     IS NULL OR m.date    >= $5)
               AND ($6::text     IS NULL OR m.date    <= $6)
               AND ($7::text[]   IS NULL OR m.media_type = ANY($7))
+              AND ($8::text[] IS NULL OR (
+                    ('text' = ANY($8)
+                     AND m.text IS NOT NULL
+                     AND to_tsvector('russian', m.text) @@ q)
+                 OR ('voice_transcription' = ANY($8)
+                     AND m.voice_transcription IS NOT NULL
+                     AND to_tsvector('russian', m.voice_transcription) @@ q)
+                 OR ('file_name' = ANY($8)
+                     AND m.file_name IS NOT NULL
+                     AND to_tsvector('russian', m.file_name) @@ q)
+                 OR ('media_text' = ANY($8)
+                     AND m.media_text IS NOT NULL
+                     AND to_tsvector('russian', m.media_text) @@ q)))
             ORDER BY ts_rank_cd(m.search_tsv, q, 32) DESC, m.date DESC
-            LIMIT $8 OFFSET $9
+            LIMIT $9 OFFSET $10
         """
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 sql, query, accounts, chat_ids, sender_ids,
-                since, until, media_kinds, limit, offset,
+                since, until, media_kinds, match_in, limit, offset,
             )
 
         hits: list[ArchiveSearchHit] = []

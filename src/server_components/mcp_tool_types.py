@@ -68,6 +68,21 @@ SearchSource = Annotated[
     ),
 ]
 
+MatchIn = Annotated[
+    str,
+    Field(
+        description=(
+            "Restrict which channel may produce a hit, comma-separated: "
+            "'voice_transcription' (what was said in a voice message), 'text' "
+            "(what was typed), 'file_name' (attachment name), 'media_text' "
+            "(text recognised on an image). Use it for questions aimed at one "
+            "channel — 'where did they say it out loud' is 'voice_transcription'. "
+            "Without it typed messages dominate the ranking and a transcript may "
+            "never reach the page. Archive only; ignored for a live-only search."
+        )
+    ),
+]
+
 PublicFilter = Annotated[
     bool,
     Field(

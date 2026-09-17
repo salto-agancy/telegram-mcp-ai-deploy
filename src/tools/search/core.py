@@ -154,6 +154,7 @@ async def search_messages_impl(
     thread_scope: ThreadScope = "auto",
     max_concurrent: int | None = _DEFAULT_MAX_CONCURRENT,
     source: str = "auto",
+    match_in: str | None = None,
 ) -> dict[str, Any]:
     """
     Unified message retrieval: search, browse, read by IDs, or list replies.
@@ -168,6 +169,10 @@ async def search_messages_impl(
             when one is configured, so speech and screenshots are searchable;
             with no archive it behaves exactly as before. "live" forces Telegram
             only, "archive" forces the local projection only.
+        match_in: Comma-separated channels allowed to produce an archive hit:
+            text, voice_transcription, file_name, media_text. Without it a
+            question about what was said out loud competes with every typed
+            message and loses on volume alone.
     """
     params = _build_search_params(
         query=query,
@@ -234,6 +239,7 @@ async def search_messages_impl(
         min_date=min_date,
         max_date=max_date,
         source=source,
+        match_in=match_in,
     )
 
 
@@ -247,6 +253,7 @@ async def _augment_with_archive(
     min_date: str | None,
     max_date: str | None,
     source: str,
+    match_in: str | None = None,
 ) -> dict[str, Any]:
     """Add archive hits to a global text search, when an archive is configured.
 
@@ -264,11 +271,13 @@ async def _augment_with_archive(
         search_archive_messages,
     )
 
+    channels = [c.strip() for c in (match_in or "").split(",") if c.strip()] or None
     archived, error = await search_archive_messages(
         query=query,
         limit=limit,
         min_date=min_date,
         max_date=max_date,
+        match_in=channels,
     )
     if error:
         return {**result, "archive_status": error}

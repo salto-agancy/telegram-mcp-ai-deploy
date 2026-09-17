@@ -53,6 +53,7 @@ async def search_archive_messages(
     chat_ids: list[int] | None = None,
     sender_ids: list[int] | None = None,
     media_kinds: list[str] | None = None,
+    match_in: list[str] | None = None,
     timeout_seconds: float = 10.0,
 ) -> tuple[list[dict[str, Any]], str | None]:
     """Search the archive. Returns (messages, error) and never raises."""
@@ -69,6 +70,7 @@ async def search_archive_messages(
                 since=_normalise_date(min_date),
                 until=_normalise_date(max_date),
                 media_kinds=media_kinds,
+                match_in=match_in,
                 limit=min(limit * ARCHIVE_OVERSHOOT, 300),
             ),
             timeout=timeout_seconds,

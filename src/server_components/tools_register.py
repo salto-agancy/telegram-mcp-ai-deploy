@@ -52,6 +52,7 @@ from src.server_components.mcp_tool_types import (
     ReplyToId,
     ReplyToMsgId,
     ResolveEntities,
+    MatchIn,
     SearchSource,
     ThreadScope,
     TopicsLimit,
@@ -319,6 +320,7 @@ def register_tools(mcp: FastMCP) -> None:
         auto_expand_batches: AutoExpandBatches = 2,
         include_total_count: IncludeTotalCount = False,
         source: SearchSource = "auto",
+        match_in: MatchIn = None,
     ) -> dict[str, Any]:
         """Global Telegram message search (full doc URL is in the MCP tool description)."""
         return await search_messages_impl(
@@ -332,6 +334,7 @@ def register_tools(mcp: FastMCP) -> None:
             auto_expand_batches=auto_expand_batches,
             include_total_count=include_total_count,
             source=source,
+            match_in=match_in,
         )
 
     @mcp.tool(

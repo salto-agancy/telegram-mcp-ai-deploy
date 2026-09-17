@@ -197,6 +197,7 @@ async def recent_activity_impl(
     candidates.sort(
         key=lambda s: (s.last_activity_date or "", s.chat_id), reverse=True
     )
+    by_id_all = {s.chat_id: s for s in candidates}
     truncated = len(candidates) > limit_chats
     candidates = candidates[:limit_chats]
     run.chats_inspected = len(candidates)
@@ -238,6 +239,16 @@ async def recent_activity_impl(
     max_lag = config.archive_max_freshness_seconds
     needs_live: list[int] = []
     for cid in by_id:
+        state_for_window = by_id[cid]
+        last_activity = state_for_window.last_activity_date
+        if last_activity is not None and last_activity < since_iso:
+            # The dialog's newest message predates the window, so the window
+            # holds nothing for this chat — arithmetic, not a guess. The chat
+            # still belongs in the answer when something is unread, but paying
+            # a Telegram round trip to be told "no messages" does not. Measured
+            # on the work account: 31 of 36 round trips were exactly this.
+            run.chats_outside_window += 1
+            continue
         chat = archive_chats.get(cid)
         if chat is None:
             needs_live.append(cid)
@@ -331,13 +342,25 @@ async def recent_activity_impl(
             "chats_returned": len(payload_chats),
             "chats_from_archive": run.chats_from_archive,
             "chats_topped_up_live": len(needs_live),
+            "chats_outside_window": run.chats_outside_window,
+            # Two different limits, reported separately: the dialog pass stops
+            # after dialog_scan_limit dialogs, and the answer keeps at most
+            # limit_chats of them. A bare "truncated: true" made a complete
+            # answer look like a lost one.
             "dialog_scan_truncated": scan.truncated,
+            "dialogs_scanned": scan.scanned,
+            "dialog_scan_limit": max(limit_chats, DEFAULT_DIALOG_SCAN_LIMIT),
+            "chats_over_limit": max(0, len(by_id_all) - limit_chats),
             "archive_enabled": backend is not None,
             "archive_accounts": archive_accounts,
             "voice_pending": run.voice_pending,
             "media_text_pending": run.media_text_pending,
         },
     }
+    if run.live_topup_unfinished:
+        # Say it out loud: these chats were not read in time, so their part of
+        # the window is unknown rather than empty.
+        result["coverage"]["chats_unread_in_time"] = len(run.live_topup_unfinished)
     if archive_error:
         result["coverage"]["archive_error"] = archive_error
     if requested_accounts:

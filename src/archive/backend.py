@@ -66,12 +66,14 @@ class ArchiveBackend(Protocol):
         since: str | None = None,
         until: str | None = None,
         media_kinds: list[str] | None = None,
+        match_in: list[str] | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[ArchiveSearchHit]:
         """Lexical search across message text, voice transcript, attachment name
         and recognised image text, with structured filters applied inside the
-        query rather than after ranking."""
+        query rather than after ranking. ``match_in`` restricts which of those
+        four channels may produce a hit."""
         ...
 
     async def close(self) -> None:

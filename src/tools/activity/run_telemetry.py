@@ -61,6 +61,14 @@ class RetrievalRun:
     slowest_read_seconds: float = 0.0
     errors: int = 0
 
+    # Chats whose newest message predates the window: kept in the answer when
+    # something is unread, but never read live, because the window cannot hold
+    # anything for them.
+    chats_outside_window: int = 0
+    # Chats the live top-up did not finish within its budget. Reported rather
+    # than hidden: a partial answer that says so is usable, a silent gap is not.
+    live_topup_unfinished: list[int] = field(default_factory=list)
+
     archive_lag_seconds_max: int | None = None
     phase_seconds: dict[str, float] = field(default_factory=dict)
 
@@ -133,6 +141,10 @@ class RetrievalRun:
             record["chats_stale_topped_up"] = self.chats_stale_topped_up
         if self.slowest_read_seconds:
             record["slowest_live_read_seconds"] = self.slowest_read_seconds
+        if self.chats_outside_window:
+            record["chats_outside_window"] = self.chats_outside_window
+        if self.live_topup_unfinished:
+            record["live_topup_unfinished"] = len(self.live_topup_unfinished)
         if self.stalled_reads:
             record["stalled_reads"] = {
                 "count": self.stalled_reads,
