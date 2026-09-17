@@ -15,14 +15,17 @@ WORKDIR /app
 
 RUN pip install --no-cache-dir "uv==${UV_VERSION}"
 
+# The archive extra is installed even though archive reads stay opt-in: the driver
+# has to exist in the image, or ARCHIVE_DSN cannot be switched on in a deployed
+# container at all. Behaviour is still governed by configuration, not by the build.
 COPY pyproject.toml uv.lock ./
 RUN mkdir -p src \
     && touch src/__init__.py \
-    && uv sync --frozen --no-dev --no-install-project
+    && uv sync --frozen --no-dev --no-install-project --extra archive
 
 COPY --chown=${APP_UID}:${APP_GID} src/ ./src/
 COPY --chown=${APP_UID}:${APP_GID} README.md LICENSE ./
-RUN uv sync --frozen --no-dev \
+RUN uv sync --frozen --no-dev --extra archive \
     && mkdir -p /data/sessions /data/oauth \
     && chown -R "${APP_UID}:${APP_GID}" /app /data
 
