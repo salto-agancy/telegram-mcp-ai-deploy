@@ -132,6 +132,19 @@ roll_back() {
 }
 
 git checkout --quiet --force "$target"
+
+# The updater updates itself, and that is a trap: after the checkout the version
+# already loaded in memory keeps running, and a rollback puts the old one back on
+# disk. Seen on the collector: a fix to its own health check could never take
+# effect, because every run rolled back and re-ran the same bug. So when the
+# updater itself changed, the new version takes over from here. The flag keeps
+# that from happening twice.
+if [ "${TG_UPDATER_RELOADED:-}" != "1" ] \
+   && ! git diff --quiet "$current" "$target" -- scripts/auto_update.sh; then
+    log "the updater itself changed — continuing with the new version"
+    TG_UPDATER_RELOADED=1 exec "$APP_DIR/scripts/auto_update.sh"
+fi
+
 trap roll_back ERR
 
 if [ "$needs_build" = "yes" ]; then
