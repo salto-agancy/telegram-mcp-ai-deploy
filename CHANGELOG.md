@@ -7,6 +7,14 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ### Added
 
+### Changed
+
+### Fixed
+
+## [0.35.0] - 2026-09-17
+
+### Added
+
 - `recent_activity`: one read-only batch snapshot of recent activity across chats,
   replacing the discover-then-open-each-chat pattern. Returns Telegram's own unread
   state (`unread_count`, `read_inbox_max_id`, `read_outbox_max_id`) alongside the

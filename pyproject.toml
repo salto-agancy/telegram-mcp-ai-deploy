@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fast-mcp-telegram"
-version = "0.34.1"
+version = "0.35.0"
 description = "AI-deployable Telegram gateway with 10 safe-by-default tools and an opt-in raw MTProto bridge"
 authors = [{name = "Alexey Leshchenko and contributors"}]
 readme = "README.md"
