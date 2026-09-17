@@ -1,0 +1,13 @@
+[Unit]
+Description=Проверять ветку release каждые 10 минут
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+# Смещение, чтобы не совпадать со сбором переписки в :17 и расшифровкой каждые 15 минут.
+RandomizedDelaySec=120
+Persistent=true
+Unit=telegram-mcp-autoupdate.service
+
+[Install]
+WantedBy=timers.target

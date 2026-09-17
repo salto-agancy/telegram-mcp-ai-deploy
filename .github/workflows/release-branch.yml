@@ -1,0 +1,60 @@
+name: Release branch
+
+# Moves the `release` branch to a commit only after every check on it has passed, so a
+# server following that branch can update itself without asking GitHub anything and without
+# holding a token. Nothing pushes to `release` by hand: it is the record of what passed.
+
+on:
+  workflow_run:
+    workflows: ["CI", "Secret scan"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+  # Needed to read the other workflows' conclusions on this commit.
+  actions: read
+
+concurrency:
+  group: release-branch
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Require every workflow on this commit to have succeeded
+        # One green workflow is not enough: tests can pass while the secret scan fails, and
+        # that commit must never reach a server. Equally, a check that has not finished yet
+        # is not a failure — it means wait, so this exits quietly and the next completion
+        # re-evaluates the same commit.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          runs=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${SHA}&status=completed" \
+            --jq '[.workflow_runs[] | select(.name == "CI" or .name == "Secret scan")]')
+          names=$(echo "$runs" | jq -r '[.[].name] | unique | join(",")')
+          failed=$(echo "$runs" | jq -r '[.[] | select(.conclusion != "success")] | length')
+          echo "completed workflows on ${SHA}: ${names:-none}, failed: ${failed}"
+          if [ "$failed" != "0" ]; then
+            echo "refusing to promote: something on this commit failed"; exit 1
+          fi
+          for required in "CI" "Secret scan"; do
+            echo "$names" | tr ',' '\n' | grep -qx "$required" || {
+              echo "waiting: $required has not finished on this commit yet"; exit 0; }
+          done
+          echo "promote=yes" >> "$GITHUB_ENV"
+
+      - name: Move release to this commit
+        if: env.promote == 'yes'
+        run: |
+          git push origin "HEAD:refs/heads/release"
+          echo "release now points at ${{ github.event.workflow_run.head_sha }}"

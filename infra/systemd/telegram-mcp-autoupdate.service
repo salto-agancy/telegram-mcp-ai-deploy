@@ -1,0 +1,14 @@
+[Unit]
+Description=Telegram MCP — обновление до проверенного коммита ветки release
+Documentation=https://github.com/salto-agancy/telegram-mcp-ai-deploy/blob/main/docs/DEPLOYMENT.md
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/telegram-mcp-v1
+ExecStart=/opt/telegram-mcp-v1/scripts/auto_update.sh
+# Пересборка образа на двух ядрах занимает минуты; аккаунты перезапускаются по
+# очереди и каждый ждёт своего health до 100 секунд.
+TimeoutStartSec=2700
+Nice=10

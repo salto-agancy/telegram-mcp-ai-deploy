@@ -30,3 +30,46 @@ published during normal operation.
 
 Logs are bounded by Docker rotation. Inspect safely with `docker compose logs --tail=200
 SERVICE`; do not enable debug logs while handling credentials.
+
+## Updating from Git
+
+The server follows the `release` branch and updates itself to it. CI moves that
+branch, and only once every check has passed on the same commit — so the branch
+is not "the latest push" but "the latest thing that passed". GitHub has no access
+to the server; the server reads Git.
+
+```
+commit → CI → secret scan → release branch → server pulls it
+       → restart personal → health → restart work → health → roll back on failure
+```
+
+What `scripts/auto_update.sh` does, and why it is shaped this way:
+
+- **One account at a time.** There are two Telegram accounts with two live
+  sessions. If the first does not come back healthy, the second is never touched
+  and the previous commit is restored — a bad commit cannot take both down.
+- **Rebuild only when the image can have changed.** Application code is mounted
+  from the checkout, so most updates are a restart. A rebuild costs minutes on
+  two cores and is skipped when the host is loaded.
+- **Health asks the archive, not just the port.** A container can answer 200 while
+  silently degraded to live-only reads — that exact failure shipped once, when the
+  image was built without the database driver. The probe therefore asks, from
+  inside the container, whether the archive actually answers.
+
+Disable it:
+
+```bash
+systemctl disable --now telegram-mcp-autoupdate.timer
+```
+
+Units are in `infra/systemd/telegram-mcp-autoupdate.*`, checking every 10 minutes
+with an offset so it does not collide with the hourly Telegram collection.
+
+### What makes a commit deployable
+
+`release` moves only when every required workflow has succeeded **on that exact
+commit**. A check still running means wait, not pass; a green result on a
+different commit does not count toward this one; and any conclusion other than
+success — including cancelled — refuses promotion. The rule is exercised in
+`tests/unit/release/test_release_promotion.py`, because relying on GitHub's
+scheduling order would make it a race rather than a guarantee.
