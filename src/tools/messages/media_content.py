@@ -10,6 +10,13 @@ them as NATIVE MCP image content (base64) INSIDE the tool result, no URL needed.
 
 Non-image files (xlsx/docx/md/...) return a short text note plus their existing
 download URL. Voice / round video return a note pointing at get_messages transcription.
+
+Whatever the background pipeline has already extracted from an attachment — text
+recognised on a screenshot, a voice transcript — is returned as text in the same
+result. Reported from production: an agent was handed the pixels of a payment
+screen, could not say which service it was, and had no way to learn that nobody
+had read the image yet. "Not extracted" and "extracted, nothing there" must not
+look the same.
 """
 
 from __future__ import annotations
@@ -20,7 +27,9 @@ from typing import Any
 
 from fastmcp.utilities.types import File, Image
 
+from src.archive import get_archive_backend
 from src.client.connection import get_connected_client
+from src.config.server_config import cfg
 from src.utils.entity import get_entity_by_id
 from src.utils.message_format import (
     _build_media_placeholder,
@@ -117,6 +126,46 @@ async def _file_note(client, message, entity, msg_id: int) -> str:
     return f"msg {msg_id}: file `{filename}` ({mime}){suffix}"
 
 
+async def _extracted_text(chat_id: int | None, msg_ids: list[int]) -> dict[int, str]:
+    """Text already extracted from these attachments, keyed by message id.
+
+    Never raises and never blocks the media itself: an archive that is down or
+    absent simply means no extra text, not a failed call.
+    """
+    backend = get_archive_backend()
+    if backend is None or chat_id is None or not msg_ids:
+        return {}
+    try:
+        accounts = await backend.accounts()
+        account = cfg().archive_account or (accounts[0] if accounts else None)
+        if not account:
+            return {}
+        found = await backend.enrichment_for_messages(
+            account=account, chat_id=chat_id, msg_ids=msg_ids
+        )
+    except Exception:
+        logger.exception("archive lookup failed — media returned without extracted text")
+        return {}
+
+    out: dict[int, str] = {}
+    for mid, row in found.items():
+        transcript = (row.get("voice_transcription") or "").strip()
+        recognised = (row.get("media_text") or "").strip()
+        status = row.get("media_text_status")
+        if transcript:
+            out[mid] = f"transcript: {transcript}"
+        elif recognised:
+            out[mid] = f"text recognised on this image: {recognised}"
+        elif status == "pending":
+            out[mid] = (
+                "no text extracted from this attachment yet — it is queued for "
+                "recognition; ask again later rather than guessing from pixels"
+            )
+        elif status == "skipped":
+            out[mid] = "recognition found no text on this image"
+    return out
+
+
 async def get_media_content_impl(
     chat_id: str, message_ids: list[int]
 ) -> list[Any]:
@@ -157,6 +206,9 @@ async def get_media_content_impl(
             f"but the limit is {MAX_IMAGES} per call. Narrow message_ids and retry."
         ]
 
+    numeric_chat_id = getattr(entity, "id", None)
+    extracted = await _extracted_text(numeric_chat_id, list(by_id.keys()))
+
     blocks: list[Any] = []
     for mid in message_ids:
         msg = by_id.get(mid)
@@ -170,13 +222,19 @@ async def get_media_content_impl(
             continue
         if kind in ("voice", "round_video"):
             label = "voice message" if kind == "voice" else "round video"
-            blocks.append(
-                f"msg {mid}: {label} — not an image; use get_messages "
-                "(field `transcription`) for its text."
-            )
+            text = extracted.get(mid)
+            if text:
+                blocks.append(f"msg {mid}: {label} — {text}")
+            else:
+                blocks.append(
+                    f"msg {mid}: {label} — not an image; use get_messages "
+                    "(field `transcription`) for its text."
+                )
             continue
         if kind == "other":
-            blocks.append(await _file_note(client, msg, entity, mid))
+            note = await _file_note(client, msg, entity, mid)
+            text = extracted.get(mid)
+            blocks.append(f"{note} — {text}" if text else note)
             continue
 
         if kind == "pdf":
@@ -231,5 +289,11 @@ async def get_media_content_impl(
 
         blocks.append(f"msg {mid} (chat {chat_id}):")
         blocks.append(Image(data=jpeg, format="jpeg"))
+        text = extracted.get(mid)
+        if text:
+            # The picture and what is written on it, together. An agent that has
+            # only pixels either guesses the service name or refuses to; neither
+            # is an answer when the recognised text is already stored.
+            blocks.append(f"msg {mid}: {text}")
 
     return blocks

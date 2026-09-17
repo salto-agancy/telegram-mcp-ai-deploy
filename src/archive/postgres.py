@@ -251,6 +251,44 @@ class PostgresArchiveBackend:
         )
         return {c.chat_id: c.messages for c in chats}
 
+    async def enrichment_for_messages(
+        self,
+        *,
+        account: str,
+        chat_id: int,
+        msg_ids: list[int],
+    ) -> dict[int, dict[str, Any]]:
+        """What the background pipeline already extracted from these messages.
+
+        Answers one question: is there text for this attachment yet. The caller
+        needs it before deciding between "here is what the screenshot says" and
+        "nothing has read it yet" — the two are indistinguishable otherwise, and
+        the second was being reported as the first.
+        """
+        if not msg_ids:
+            return {}
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT msg_id, media_text, media_text_status,
+                       voice_transcription, media_type, file_name
+                FROM messages
+                WHERE account = $1 AND chat_id = $2 AND msg_id = ANY($3)
+                """,
+                account, chat_id, msg_ids,
+            )
+        return {
+            row["msg_id"]: {
+                "media_text": row["media_text"],
+                "media_text_status": row["media_text_status"],
+                "voice_transcription": row["voice_transcription"],
+                "media_type": row["media_type"],
+                "file_name": row["file_name"],
+            }
+            for row in rows
+        }
+
     # ── search ──────────────────────────────────────────────────────────────
 
     async def search(
