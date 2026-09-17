@@ -27,7 +27,10 @@ declare -A PORTS=( [personal]=8820 [work]=8821 )
 cd "$APP_DIR"
 log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
 
-if ! git fetch --quiet origin "$BRANCH" 2>/dev/null; then
+# Explicit refspec: a shallow checkout made with --branch <tag> carries no
+# remote-tracking configuration, so a plain `git fetch origin release` succeeds
+# while `origin/release` stays unknown. The first live run failed exactly there.
+if ! git fetch --quiet origin "+${BRANCH}:refs/remotes/origin/${BRANCH}" 2>/dev/null; then
     # The branch appears the first time CI promotes a commit onto it. Until then there is
     # simply nothing verified to deploy, which is not an error.
     log "branch ${BRANCH} does not exist yet; nothing verified to deploy"
