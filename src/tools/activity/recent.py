@@ -26,6 +26,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from src.archive import get_archive_backend
+from src.archive.account_scope import pick_archive_account
 from src.archive.models import ArchiveMessage
 from src.client.connection import get_connected_client
 from src.config.server_config import cfg
@@ -214,7 +215,7 @@ async def recent_activity_impl(
             try:
                 archive_accounts = await backend.accounts()
                 run.archive_queries += 1
-                target = _pick_archive_account(
+                target = pick_archive_account(
                     archive_accounts,
                     requested_accounts,
                     account_label,
@@ -376,38 +377,6 @@ async def recent_activity_impl(
     if include_telemetry:
         result["telemetry"] = run.to_dict()
     return result
-
-
-def _pick_archive_account(
-    available: list[str],
-    requested: list[str],
-    session_label: str,
-    *,
-    configured: str = "",
-) -> str | None:
-    """Choose which archived account this session may read.
-
-    A session is authenticated as exactly one Telegram account, so it reads that
-    account's archive and no one else's. An explicit request for a different
-    account is refused here rather than quietly served.
-
-    The configured label wins, because the two naming schemes never agree on
-    their own: an archive labels accounts the way its operator thinks about them
-    ("personal", "work") while a session knows itself by Telegram username. A
-    first live run proved the cost of relying on the accidental match — the
-    archive held every message and answered none of them, and the snapshot came
-    back entirely from live Telegram while reporting success.
-    """
-    if not available:
-        return None
-    if configured:
-        return configured if configured in available else None
-    for candidate in (session_label, *requested):
-        if candidate in available:
-            return candidate
-    if len(available) == 1:
-        return available[0]
-    return None
 
 
 def _message_payload(msg: ArchiveMessage, state: DialogState) -> dict[str, Any]:

@@ -442,7 +442,7 @@ def test_configured_label_wins_over_username_matching():
     the archive zero times while reporting success, and every message came from
     live Telegram instead.
     """
-    from src.tools.activity.recent import _pick_archive_account
+    from src.archive.account_scope import pick_archive_account as _pick_archive_account
 
     assert _pick_archive_account(
         ["personal", "work"], [], "real_username", configured="personal"
@@ -450,7 +450,7 @@ def test_configured_label_wins_over_username_matching():
 
 
 def test_configured_label_that_is_not_in_the_archive_reads_nothing():
-    from src.tools.activity.recent import _pick_archive_account
+    from src.archive.account_scope import pick_archive_account as _pick_archive_account
 
     assert _pick_archive_account(
         ["personal", "work"], [], "someone", configured="missing"
@@ -458,20 +458,20 @@ def test_configured_label_that_is_not_in_the_archive_reads_nothing():
 
 
 def test_username_match_still_works_without_configuration():
-    from src.tools.activity.recent import _pick_archive_account
+    from src.archive.account_scope import pick_archive_account as _pick_archive_account
 
     assert _pick_archive_account(["alice", "bob"], [], "alice") == "alice"
 
 
 def test_single_account_archive_needs_no_configuration():
-    from src.tools.activity.recent import _pick_archive_account
+    from src.archive.account_scope import pick_archive_account as _pick_archive_account
 
     assert _pick_archive_account(["only"], [], "whoever") == "only"
 
 
 def test_ambiguous_archive_without_configuration_reads_nothing():
     """Guessing between two accounts would mean serving someone else's messages."""
-    from src.tools.activity.recent import _pick_archive_account
+    from src.archive.account_scope import pick_archive_account as _pick_archive_account
 
     assert _pick_archive_account(["personal", "work"], [], "stranger") is None
 

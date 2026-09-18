@@ -6,6 +6,8 @@ The hits were not missing — they were outvoted. `match_in` states the channel
 instead of hoping ranking picks it.
 """
 
+from types import SimpleNamespace
+
 import pytest
 
 from src.tools.search.archive_search import search_archive_messages
@@ -17,6 +19,9 @@ class RecordingBackend:
     def __init__(self):
         self.calls: list[dict] = []
 
+    async def accounts(self):
+        return ["personal"]
+
     async def search(self, **kwargs):
         self.calls.append(kwargs)
         return []
@@ -26,7 +31,39 @@ class RecordingBackend:
 def backend(monkeypatch):
     b = RecordingBackend()
     monkeypatch.setattr("src.tools.search.archive_search.get_archive_backend", lambda: b)
+    monkeypatch.setattr(
+        "src.tools.search.archive_search.cfg",
+        lambda: SimpleNamespace(archive_account="personal"),
+    )
     return b
+
+
+async def test_the_search_is_confined_to_this_session_account(backend):
+    """Both connectors were served the same rows before this was passed down."""
+    await search_archive_messages(query="договор", limit=20)
+
+    assert backend.calls[0]["accounts"] == ["personal"]
+
+
+async def test_an_undecidable_account_skips_the_archive(monkeypatch):
+    """Two accounts and no way to choose: refuse rather than serve the wrong one."""
+
+    class TwoAccounts(RecordingBackend):
+        async def accounts(self):
+            return ["personal", "work"]
+
+    b = TwoAccounts()
+    monkeypatch.setattr("src.tools.search.archive_search.get_archive_backend", lambda: b)
+    monkeypatch.setattr(
+        "src.tools.search.archive_search.cfg",
+        lambda: SimpleNamespace(archive_account=""),
+    )
+
+    hits, error = await search_archive_messages(query="договор", limit=20)
+
+    assert hits == []
+    assert error == "archive_account_undetermined"
+    assert b.calls == [], "the archive was queried without knowing whose rows to read"
 
 
 async def test_channel_filter_reaches_the_backend(backend):

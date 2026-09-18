@@ -16,6 +16,8 @@ import logging
 from typing import Any
 
 from src.archive import get_archive_backend
+from src.archive.account_scope import pick_archive_account
+from src.config.server_config import cfg
 from src.tools.activity.window import to_archive_string
 from src.utils.datetime_parse import parse_iso_datetime_utc
 
@@ -54,6 +56,7 @@ async def search_archive_messages(
     sender_ids: list[int] | None = None,
     media_kinds: list[str] | None = None,
     match_in: list[str] | None = None,
+    session_label: str | None = None,
     timeout_seconds: float = 10.0,
 ) -> tuple[list[dict[str, Any]], str | None]:
     """Search the archive. Returns (messages, error) and never raises."""
@@ -62,8 +65,30 @@ async def search_archive_messages(
         return [], None
 
     try:
+        accounts = await backend.accounts()
+    except Exception:
+        logger.exception("archive account list failed — live results only")
+        return [], "archive_unavailable"
+
+    # Whose rows this session may read. A search that omits this does not fail —
+    # it answers with someone else's messages: both connectors were returning the
+    # same attachments, so work served personal correspondence and back again.
+    account = pick_archive_account(
+        accounts, [], session_label or "", configured=cfg().archive_account
+    )
+    if account is None:
+        # Refusing is the safe end of the trade: a live-only answer is
+        # incomplete, an answer from the wrong account is a leak.
+        logger.warning(
+            "archive holds %d accounts and none is selected for this session — "
+            "skipping archive results", len(accounts),
+        )
+        return [], "archive_account_undetermined"
+
+    try:
         hits = await asyncio.wait_for(
             backend.search(
+                accounts=[account],
                 query=query,
                 chat_ids=chat_ids,
                 sender_ids=sender_ids,
