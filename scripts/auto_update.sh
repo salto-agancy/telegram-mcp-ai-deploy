@@ -18,11 +18,26 @@
 # Safe to run from a timer: with no new commit it does nothing and says nothing.
 set -Eeuo pipefail
 
-APP_DIR="${APP_DIR:-/opt/telegram-mcp-v1}"
+# Where this deployment lives is a property of the machine, not of the code. The
+# script used to carry one installation's paths, container prefix and ports as
+# defaults, which turned a public repository into a map of a private server.
+# Settings come from the environment, optionally via a config file next to the
+# service. deploy.env.example documents every name.
+DEPLOY_CONFIG="${DEPLOY_CONFIG:-/etc/salto-mcp/telegram-deploy.env}"
+# shellcheck source=/dev/null
+[ -r "$DEPLOY_CONFIG" ] && . "$DEPLOY_CONFIG"
+
+: "${APP_DIR:?APP_DIR is not set — point it at the checkout to deploy}"
+: "${SERVICE_DIR:?SERVICE_DIR is not set — point it at the compose project}"
+: "${CONTAINER_PREFIX:?CONTAINER_PREFIX is not set — e.g. myservice- for myservice-personal}"
 BRANCH="${DEPLOY_BRANCH:-release}"
-SERVICE_DIR="${SERVICE_DIR:-/opt/unified-tg-service}"
 ACCOUNTS="${DEPLOY_ACCOUNTS:-personal work}"
-declare -A PORTS=( [personal]=8820 [work]=8821 )
+
+# One port per account: "personal=8820 work=8821".
+declare -A PORTS=()
+for pair in ${DEPLOY_PORTS:?DEPLOY_PORTS is not set — e.g. "personal=8820 work=8821"}; do
+    PORTS["${pair%%=*}"]="${pair#*=}"
+done
 
 cd "$APP_DIR"
 log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
@@ -84,7 +99,7 @@ archive_answers() {
     # revisions, and an account still on an older image has no archive module at all — the
     # first live run let that ModuleNotFoundError reach the ERR trap and rolled back a
     # perfectly healthy deployment. Health is decided by health(); this only informs.
-    local container="unified-tg-$1"
+    local container="${CONTAINER_PREFIX}$1"
     docker exec -w /app "$container" python3 -c "
 import sys, asyncio
 sys.path.insert(0, '/app'); sys.argv = [sys.argv[0]]

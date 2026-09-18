@@ -43,6 +43,13 @@ commit → CI → secret scan → release branch → server pulls it
        → restart personal → health → restart work → health → roll back on failure
 ```
 
+Where the deployment lives is configuration, not code. The updater reads
+`/etc/salto-mcp/telegram-deploy.env` (override with `DEPLOY_CONFIG`) or plain
+environment variables; `deploy.env.example` documents every name and ships with
+placeholder values. Paths, container prefix and ports used to sit in the script
+as defaults, which made a public repository a map of one private server — none
+of it secret, none of it anyone else's business either.
+
 What `scripts/auto_update.sh` does, and why it is shaped this way:
 
 - **One account at a time.** There are two Telegram accounts with two live

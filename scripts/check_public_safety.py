@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import ipaddress
+import os
+import pathlib
 import re
 import subprocess
 import sys
@@ -16,13 +19,65 @@ SELF = "scripts/check_public_safety.py"
 PATTERNS = {
     "absolute-user-path": re.compile(r"(?i)(?:/Users/[^/\s]+|[A-Z]:\\Users\\[^\\\s]+)"),
     "personal-email": re.compile(r"(?i)\b[\w.+-]+@[\w.-]+\.[a-z]{2,}\b"),
-    "production-name": re.compile(
-        r"(?i)\b(?:hostinger|timeweb|abdavidyan|salto_dima|salto9726|unfornate)\b"
-    ),
     "personal-bot": re.compile(r"(?i)@salto_[A-Za-z0-9_]+"),
     "phone-number": re.compile(r"(?<![\w])\+[1-9]\d[\d ()-]{8,}\d(?![\w])"),
     "ipv4": re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])"),
 }
+
+# Production names — hosting providers, account handles — are checked by digest,
+# not by spelling. Writing them into a pattern published the very list the scan
+# exists to keep out of a public repository: the guard was leaking its own
+# subject. Digests catch the same words and name none of them.
+#
+# Only whole words are matched, which is what the previous pattern did too
+# (\b...\b). A private list of additional words can be passed in without ever
+# touching this file — same convention as the VPN guide's publish gate:
+#
+#   TELEGRAM_MCP_DENYLIST=~/.config/salto/tg-mcp-denylist.txt python scripts/check_public_safety.py
+#
+# Denylist format: one word per line, '#' starts a comment.
+PRODUCTION_NAME_DIGESTS = frozenset({
+    "fefaa42da40ecf93662a6f2852c1d431",
+    "27e4f95908481197a8aa1c7e35ac3c07",
+    "14578ec4cab868833e7017c95962d75a",
+    "90db9b2953ebaa26ad7ef2d53dcb9df1",
+    "9ebc93c33b2642e2c5f141e09a32c842",
+    "1557a39e6cf1421669937e9e6a2b988c",
+})
+DENYLIST_ENV = "TELEGRAM_MCP_DENYLIST"
+WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]{3,}")
+
+
+def _digest(word: str) -> str:
+    return hashlib.sha256(word.lower().encode()).hexdigest()[:32]
+
+
+def _extra_digests() -> frozenset[str]:
+    """Words from a private denylist, if the caller pointed at one."""
+    path = os.environ.get(DENYLIST_ENV)
+    if not path:
+        return frozenset()
+    try:
+        lines = pathlib.Path(path).expanduser().read_text(encoding="utf-8").splitlines()
+    except OSError:
+        print(f"denylist not readable: {path}", file=sys.stderr)
+        return frozenset()
+    return frozenset(
+        _digest(w.strip()) for w in lines if w.strip() and not w.startswith("#")
+    )
+
+
+def production_name_findings(label: str, text: str) -> list[tuple[str, str, int]]:
+    """Whole words whose digest is on the list, reported without quoting them."""
+    banned = PRODUCTION_NAME_DIGESTS | _extra_digests()
+    findings: list[tuple[str, str, int]] = []
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        for match in WORD_RE.finditer(line):
+            if _digest(match.group(0)) in banned:
+                findings.append(("production-name", f"{label}:{lineno}", lineno))
+                break
+    return findings
+
 
 SAFE_EMAIL_SUFFIXES = ("@users.noreply.github.com",)
 SAFE_EMAILS = {"noreply@github.com"}
@@ -67,6 +122,7 @@ def scan(label: str, text: str) -> list[tuple[str, str, int]]:
             for match in pattern.finditer(line):
                 if is_finding(rule, match.group(0)):
                     findings.append((rule, label, line_number))
+    findings.extend(production_name_findings(label, text))
     return findings
 
 
