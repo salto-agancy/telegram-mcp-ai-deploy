@@ -54,7 +54,18 @@ fi
 
 current="$(git rev-parse HEAD)"
 target="$(git rev-parse "origin/${BRANCH}")"
-[ "$current" = "$target" ] && exit 0
+
+# After the updater hands over to its new self (see below) the checkout is already
+# at the target, so the ordinary "nothing to do" exit would fire and the restart
+# would never happen: disk updated, containers still running the old code in
+# memory. Observed on 18.09 — the run reported success and restarted nothing.
+# The handover therefore says what it was in the middle of.
+if [ "${TG_UPDATER_RELOADED:-}" = "1" ] && [ -n "${TG_UPDATER_FROM:-}" ]; then
+    current="$TG_UPDATER_FROM"
+    log "resumed after updating myself: finishing the deploy of ${target:0:8}"
+elif [ "$current" = "$target" ]; then
+    exit 0
+fi
 
 log "new verified commit: ${current:0:8} -> ${target:0:8}"
 log "$(git log --oneline -1 "$target")"
@@ -157,7 +168,7 @@ git checkout --quiet --force "$target"
 if [ "${TG_UPDATER_RELOADED:-}" != "1" ] \
    && ! git diff --quiet "$current" "$target" -- scripts/auto_update.sh; then
     log "the updater itself changed — continuing with the new version"
-    TG_UPDATER_RELOADED=1 exec "$APP_DIR/scripts/auto_update.sh"
+    TG_UPDATER_RELOADED=1 TG_UPDATER_FROM="$current" exec "$APP_DIR/scripts/auto_update.sh"
 fi
 
 trap roll_back ERR
