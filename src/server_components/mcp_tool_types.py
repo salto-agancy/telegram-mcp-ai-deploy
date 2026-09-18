@@ -83,6 +83,20 @@ MatchIn = Annotated[
     ),
 ]
 
+Brief = Annotated[
+    bool,
+    Field(
+        description=(
+            "If true, return identifiers, dates, attachment metadata and short "
+            "excerpts instead of whole messages. Use it for counting, listing or "
+            "filtering — anywhere the full text is paid for and then thrown away. "
+            "Measured: one answer came back at 76 000 tokens when a single "
+            "filename field was what mattered. Read the full message afterwards "
+            "with get_messages by id."
+        )
+    ),
+]
+
 PublicFilter = Annotated[
     bool,
     Field(

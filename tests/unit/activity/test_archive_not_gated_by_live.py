@@ -23,7 +23,7 @@ LIVE_EMPTY_ERROR = {
 def archive_with(monkeypatch):
     def _apply(hits, error=None):
         async def fake_search(**kwargs):
-            return hits, error
+            return hits, error, None
 
         monkeypatch.setattr(
             "src.tools.search.archive_search.search_archive_messages", fake_search

@@ -32,10 +32,42 @@ def _normalise_date(raw: str | None) -> str | None:
     return to_archive_string(parsed) if parsed else None
 
 
-def _hit_to_message(hit: Any) -> dict[str, Any]:
+# Fields worth keeping when the caller asked for a list rather than the reading.
+# Enough to decide and to fetch the full message afterwards; nothing that grows
+# with the length of the conversation.
+_BRIEF_KEYS = ("id", "date", "chat_id", "account", "is_outgoing", "matched_in", "source")
+_BRIEF_MEDIA_KEYS = ("kind", "file_name", "mime_type", "size_bytes",
+                     "duration_seconds", "transcription_status", "media_text_status")
+# Long fields are cut rather than dropped: a hit whose only evidence is inside a
+# transcript has to show enough of it to be recognisable.
+_BRIEF_EXCERPT = 160
+
+
+def _excerpt(value: Any) -> Any:
+    if isinstance(value, str) and len(value) > _BRIEF_EXCERPT:
+        return value[:_BRIEF_EXCERPT] + "…"
+    return value
+
+
+def _hit_to_message(hit: Any, *, brief: bool = False) -> dict[str, Any]:
     payload = hit.to_dict()
     payload["source"] = "archive"
-    return payload
+    if not brief:
+        return payload
+
+    out = {k: payload[k] for k in _BRIEF_KEYS if k in payload}
+    for key in ("text", "transcription", "media_text"):
+        if payload.get(key):
+            out[key] = _excerpt(payload[key])
+    media = payload.get("media")
+    if isinstance(media, dict):
+        slim = {k: media[k] for k in _BRIEF_MEDIA_KEYS if k in media}
+        for key in ("transcription", "media_text"):
+            if media.get(key):
+                slim[key] = _excerpt(media[key])
+        if slim:
+            out["media"] = slim
+    return out
 
 
 def _message_key(message: dict[str, Any]) -> tuple[Any, Any]:
@@ -57,18 +89,24 @@ async def search_archive_messages(
     media_kinds: list[str] | None = None,
     match_in: list[str] | None = None,
     session_label: str | None = None,
+    brief: bool = False,
     timeout_seconds: float = 10.0,
-) -> tuple[list[dict[str, Any]], str | None]:
-    """Search the archive. Returns (messages, error) and never raises."""
+) -> tuple[list[dict[str, Any]], str | None, int | None]:
+    """Search the archive. Returns (messages, error, total) and never raises.
+
+    ``total`` is how many messages match in all, not how many are returned. A page
+    that does not say so gets read as a total: an agent asked how many voice
+    messages mention payment, got its fifty, and answered "fifty" — there were 242.
+    """
     backend = get_archive_backend()
     if backend is None or not query or not query.strip():
-        return [], None
+        return [], None, None
 
     try:
         accounts = await backend.accounts()
     except Exception:
         logger.exception("archive account list failed — live results only")
-        return [], "archive_unavailable"
+        return [], "archive_unavailable", None
 
     # Whose rows this session may read. A search that omits this does not fail —
     # it answers with someone else's messages: both connectors were returning the
@@ -83,7 +121,7 @@ async def search_archive_messages(
             "archive holds %d accounts and none is selected for this session — "
             "skipping archive results", len(accounts),
         )
-        return [], "archive_account_undetermined"
+        return [], "archive_account_undetermined", None
 
     try:
         hits = await asyncio.wait_for(
@@ -102,12 +140,33 @@ async def search_archive_messages(
         )
     except TimeoutError:
         logger.warning("archive search timed out — live results only")
-        return [], "archive_timeout"
+        return [], "archive_timeout", None
     except Exception:
         logger.exception("archive search failed — live results only")
-        return [], "archive_unavailable"
+        return [], "archive_unavailable", None
 
-    return [_hit_to_message(h) for h in hits], None
+    total: int | None = None
+    if len(hits) >= limit:
+        # Only worth a second query when the page is full: a short page is its own
+        # total, and counting is not free on a large archive.
+        try:
+            total = await asyncio.wait_for(
+                backend.count_matches(
+                    accounts=[account],
+                    query=query,
+                    chat_ids=chat_ids,
+                    sender_ids=sender_ids,
+                    since=_normalise_date(min_date),
+                    until=_normalise_date(max_date),
+                    media_kinds=media_kinds,
+                    match_in=match_in,
+                ),
+                timeout=timeout_seconds,
+            )
+        except Exception:
+            logger.warning("archive match count failed — page returned without a total")
+
+    return [_hit_to_message(h, brief=brief) for h in hits], None, total
 
 
 # Smallest share of the answer reserved for hits only the archive can produce.

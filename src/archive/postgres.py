@@ -289,6 +289,59 @@ class PostgresArchiveBackend:
             for row in rows
         }
 
+    async def count_matches(
+        self,
+        *,
+        query: str,
+        accounts: list[str] | None = None,
+        chat_ids: list[int] | None = None,
+        sender_ids: list[int] | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        media_kinds: list[str] | None = None,
+        match_in: list[str] | None = None,
+    ) -> int:
+        """How many messages match, beyond the page being returned.
+
+        Without it a page reads as a total. Observed: an agent asked how many
+        voice messages mention payment, received the fifty it had asked for, and
+        reported fifty as the answer — the archive held 242.
+        """
+        pool = await self._get_pool()
+        sql = """
+            SELECT count(*)
+            FROM messages m,
+                 websearch_to_tsquery('russian', $1) AS q
+            WHERE m.search_tsv @@ q
+              AND ($2::text[]   IS NULL OR m.account  = ANY($2))
+              AND ($3::bigint[] IS NULL OR m.chat_id  = ANY($3))
+              AND ($4::bigint[] IS NULL OR m.from_id  = ANY($4))
+              AND ($5::text     IS NULL OR m.date    >= $5)
+              AND ($6::text     IS NULL OR m.date    <= $6)
+              AND ($7::text[]   IS NULL OR m.media_type = ANY($7))
+              AND ($8::text[] IS NULL OR (
+                    ('text' = ANY($8)
+                     AND m.text IS NOT NULL
+                     AND to_tsvector('russian', m.text) @@ q)
+                 OR ('voice_transcription' = ANY($8)
+                     AND m.voice_transcription IS NOT NULL
+                     AND to_tsvector('russian', m.voice_transcription) @@ q)
+                 OR ('file_name' = ANY($8)
+                     AND m.file_name IS NOT NULL
+                     AND to_tsvector('russian', m.file_name) @@ q)
+                 OR ('media_text' = ANY($8)
+                     AND m.media_text IS NOT NULL
+                     AND to_tsvector('russian', m.media_text) @@ q)))
+        """
+        async with pool.acquire() as conn:
+            return int(
+                await conn.fetchval(
+                    sql, query, accounts, chat_ids, sender_ids,
+                    since, until, media_kinds, match_in,
+                )
+                or 0
+            )
+
     # ── search ──────────────────────────────────────────────────────────────
 
     async def search(

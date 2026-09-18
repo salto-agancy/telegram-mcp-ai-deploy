@@ -59,7 +59,7 @@ async def test_an_undecidable_account_skips_the_archive(monkeypatch):
         lambda: SimpleNamespace(archive_account=""),
     )
 
-    hits, error = await search_archive_messages(query="договор", limit=20)
+    hits, error, _total = await search_archive_messages(query="договор", limit=20)
 
     assert hits == []
     assert error == "archive_account_undetermined"
@@ -83,7 +83,7 @@ async def test_comma_separated_request_becomes_a_list(monkeypatch):
 
     async def fake_search(**kwargs):
         seen.update(kwargs)
-        return [], None
+        return [], None, None
 
     monkeypatch.setattr(
         "src.tools.search.archive_search.search_archive_messages", fake_search

@@ -155,6 +155,7 @@ async def search_messages_impl(
     max_concurrent: int | None = _DEFAULT_MAX_CONCURRENT,
     source: str = "auto",
     match_in: str | None = None,
+    brief: bool = False,
 ) -> dict[str, Any]:
     """
     Unified message retrieval: search, browse, read by IDs, or list replies.
@@ -173,6 +174,10 @@ async def search_messages_impl(
             text, voice_transcription, file_name, media_text. Without it a
             question about what was said out loud competes with every typed
             message and loses on volume alone.
+        brief: Return identifiers, dates, attachment metadata and short excerpts
+            instead of whole messages. For counting, listing or filtering, where
+            full text is paid for and then discarded: one such answer came back
+            at 76 000 tokens when the caller needed a single filename field.
     """
     params = _build_search_params(
         query=query,
@@ -218,7 +223,14 @@ async def search_messages_impl(
     # error, and an error carries no `messages`, so the archive was never asked.
     # A screenshot whose recognised text answers the question came back as "no
     # messages found" — the one case the archive exists for.
-    if source == "archive" and mode == "global_search" and query and query.strip():
+    # match_in names a channel only the archive has — a voice transcript, text
+    # recognised on an image, an attachment name. Mixing live text results into
+    # that is not extra generosity, it is noise: asking for attachments named
+    # "contract" returned four such files buried under forty-six ordinary
+    # messages, and the four were read as one. A question this specific gets a
+    # specific answer.
+    archive_only = source == "archive" or bool(match_in)
+    if archive_only and mode == "global_search" and query and query.strip():
         result: dict[str, Any] = {"messages": [], "has_more": False}
     else:
         result = await _dispatch_search_mode(
@@ -246,8 +258,9 @@ async def search_messages_impl(
         limit=limit,
         min_date=min_date,
         max_date=max_date,
-        source=source,
+        source="archive" if archive_only else source,
         match_in=match_in,
+        brief=brief,
     )
 
 
@@ -262,6 +275,7 @@ async def _augment_with_archive(
     max_date: str | None,
     source: str,
     match_in: str | None = None,
+    brief: bool = False,
 ) -> dict[str, Any]:
     """Add archive hits to a global text search, when an archive is configured.
 
@@ -293,12 +307,13 @@ async def _augment_with_archive(
     )
 
     channels = [c.strip() for c in (match_in or "").split(",") if c.strip()] or None
-    archived, error = await search_archive_messages(
+    archived, error, archive_total = await search_archive_messages(
         query=query,
         limit=limit,
         min_date=min_date,
         max_date=max_date,
         match_in=channels,
+        brief=brief,
     )
     if error:
         return live_error or {**result, "archive_status": error}
@@ -312,4 +327,9 @@ async def _augment_with_archive(
 
     live = [] if source == "archive" else list(result.get("messages") or [])
     merged, stats = merge_search_results(live, archived, limit=limit)
-    return {**result, "messages": merged, "search_sources": stats}
+    out = {**result, "messages": merged, "search_sources": stats}
+    if archive_total is not None and archive_total > len(archived):
+        # Say that the page is a page. Without this a caller counts what it was
+        # handed and reports that as the answer.
+        out["archive_total_matches"] = archive_total
+    return out
