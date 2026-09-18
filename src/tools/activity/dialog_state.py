@@ -158,12 +158,15 @@ async def scan_dialogs(
     the requested window and filters by date afterwards.
     """
     scan = DialogScan()
+    last_seen_date: str | None = None
     try:
         async for dialog in client.iter_dialogs(limit=limit, archived=include_archived):
             scan.scanned += 1
             state = _state_from_dialog(dialog)
             if state is None:
                 continue
+            if state.last_activity_date:
+                last_seen_date = state.last_activity_date
             if (
                 since_iso
                 and state.last_activity_date
@@ -173,7 +176,13 @@ async def scan_dialogs(
                 # Older than the window and nothing unread: not part of this answer.
                 continue
             scan.dialogs.append(state)
-        scan.truncated = scan.scanned >= limit
+        # "Truncated" must mean "the window was not covered", not "the cap was
+        # reached". The two differ: hitting the cap right after the last dialog in
+        # the window is a complete answer. Reporting it as truncated made every
+        # ordinary run look like it had lost something, so the flag said nothing.
+        scan.truncated = scan.scanned >= limit and (
+            since_iso is None or last_seen_date is None or last_seen_date >= since_iso
+        )
     except Exception:
         logger.exception("dialog scan failed")
         raise

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.tools.activity.dialog_state import DialogState, scan_dialogs
+from tests.unit.activity.conftest import iso
 
 
 def _state(**kwargs) -> DialogState:
@@ -117,3 +118,31 @@ async def test_scan_reports_truncation():
     scan = await scan_dialogs(client, since_iso=None, limit=10)
     assert scan.truncated is True
     assert len(scan.dialogs) == 10
+
+
+# ── what "truncated" is allowed to mean ─────────────────────────────────────
+
+
+async def test_reaching_the_cap_past_the_window_is_not_truncation():
+    """The window was covered; the cap simply arrived afterwards."""
+    from tests.unit.activity.conftest import FakeClient, FakeDialog
+
+    dialogs = [FakeDialog(1, minutes_ago=10), FakeDialog(2, minutes_ago=60 * 24 * 30)]
+    scan = await scan_dialogs(
+        FakeClient(dialogs), since_iso=iso(60 * 24), limit=2
+    )
+
+    assert scan.scanned == 2, "the cap was not actually reached"
+    assert scan.truncated is False
+
+
+async def test_reaching_the_cap_inside_the_window_is_truncation():
+    """Every dialog seen was still inside the window: more may be waiting."""
+    from tests.unit.activity.conftest import FakeClient, FakeDialog
+
+    dialogs = [FakeDialog(1, minutes_ago=10), FakeDialog(2, minutes_ago=20)]
+    scan = await scan_dialogs(
+        FakeClient(dialogs), since_iso=iso(60 * 24), limit=2
+    )
+
+    assert scan.truncated is True

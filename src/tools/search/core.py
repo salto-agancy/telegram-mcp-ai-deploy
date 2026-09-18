@@ -104,14 +104,14 @@ async def _dispatch_search_mode(
         )
 
     return await _handle_query_mode(
-        query=query,
-        chat_id=chat_id,
-        limit=limit,
-        min_date=min_date,
-        max_date=max_date,
-        chat_type=chat_type,
-        public=public,
-        auto_expand_batches=auto_expand_batches,
+            query=query,
+            chat_id=chat_id,
+            limit=limit,
+            min_date=min_date,
+            max_date=max_date,
+            chat_type=chat_type,
+            public=public,
+            auto_expand_batches=auto_expand_batches,
         include_total_count=include_total_count,
         params=params,
     )
@@ -177,8 +177,8 @@ async def search_messages_impl(
     params = _build_search_params(
         query=query,
         chat_id=chat_id,
-        message_ids=message_ids,
-        reply_to_id=reply_to_id,
+            message_ids=message_ids,
+            reply_to_id=reply_to_id,
         thread_scope=thread_scope,
         limit=limit,
         min_date=min_date,
@@ -213,22 +213,30 @@ async def search_messages_impl(
             exception=e,
         )
 
-    result = await _dispatch_search_mode(
-        mode,
-        params,
-        query=query,
-        chat_id=chat_id,
-        message_ids=message_ids,
-        reply_to_id=reply_to_id,
-        limit=limit,
-        min_date=min_date,
-        max_date=max_date,
-        chat_type=chat_type,
-        public=public,
-        auto_expand_batches=auto_expand_batches,
-        include_total_count=include_total_count,
-        thread_scope=thread_scope,
-    )
+    # source="archive" says "look only in the local projection". Calling Telegram
+    # anyway was not merely wasteful: a live search that finds nothing returns an
+    # error, and an error carries no `messages`, so the archive was never asked.
+    # A screenshot whose recognised text answers the question came back as "no
+    # messages found" — the one case the archive exists for.
+    if source == "archive" and mode == "global_search" and query and query.strip():
+        result: dict[str, Any] = {"messages": [], "has_more": False}
+    else:
+        result = await _dispatch_search_mode(
+            mode,
+            params,
+            query=query,
+            chat_id=chat_id,
+            message_ids=message_ids,
+            reply_to_id=reply_to_id,
+            limit=limit,
+            min_date=min_date,
+            max_date=max_date,
+            chat_type=chat_type,
+            public=public,
+            auto_expand_batches=auto_expand_batches,
+            include_total_count=include_total_count,
+            thread_scope=thread_scope,
+        )
 
     return await _augment_with_archive(
         result,
@@ -261,10 +269,23 @@ async def _augment_with_archive(
     id and listing replies already have an exact answer from Telegram; widening
     them would change well-defined behaviour for no gain.
     """
-    if source == "live" or not isinstance(result, dict) or "messages" not in result:
+    if source == "live" or not isinstance(result, dict):
         return result
     if chat_id is not None or not (query and query.strip()):
         return result
+
+    # A live search that found nothing returns an error, not an empty list. Taking
+    # that as final meant the archive was never consulted, so anything only it can
+    # answer — a spoken phrase, text recognised on a screenshot, an attachment
+    # name — was reported as "no messages found". The error is kept only if the
+    # archive has nothing either.
+    live_error = None
+    if "messages" not in result:
+        if not result.get("ok", True) or "error" in result:
+            live_error = result
+            result = {"messages": [], "has_more": False}
+        else:
+            return result
 
     from src.tools.search.archive_search import (
         merge_search_results,
@@ -280,9 +301,14 @@ async def _augment_with_archive(
         match_in=channels,
     )
     if error:
-        return {**result, "archive_status": error}
-    if not archived and source != "archive":
-        return result
+        return live_error or {**result, "archive_status": error}
+    if not archived:
+        # Nothing on either side: the live error, if there was one, is the honest
+        # answer — it says what was searched for.
+        if live_error is not None:
+            return live_error
+        if source != "archive":
+            return result
 
     live = [] if source == "archive" else list(result.get("messages") or [])
     merged, stats = merge_search_results(live, archived, limit=limit)

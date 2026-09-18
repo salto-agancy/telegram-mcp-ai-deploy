@@ -87,7 +87,14 @@ def _tool_description(body: str, *, extra: str = "") -> str:
 _DESC_SEARCH_GLOBAL = _tool_description(
     "Search all Telegram chats at once (not scoped to one chat). "
     "Comma-separated query terms; optional filters by date, chat kind, and public username. "
-    "Success: message list and metadata dict. ",
+    "Success: message list and metadata dict. "
+    "When the question is about one channel of content — what was SAID in a voice "
+    "message, what is WRITTEN on a screenshot, the NAME of an attached file — pass "
+    "match_in, because typed messages outnumber those by orders of magnitude and "
+    "fill the page before a single one appears. Measured on a real archive: a common "
+    "word had 3 488 matches in typed text against 266 in transcripts, and a search "
+    "for attachments named 'contract' returned fifty text hits and none of the nine "
+    "files that carry the word in the filename. ",
     extra="Global search ignores include_total_count.",
 )
 
