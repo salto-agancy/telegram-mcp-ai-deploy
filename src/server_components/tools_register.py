@@ -80,8 +80,23 @@ TOOLS_REFERENCE_DOC_URL = "https://github.com/leshchenko1979/fast-mcp-telegram/b
 # MCP-visible tool descriptions (short; full examples at TOOLS_REFERENCE_DOC_URL).
 
 
+def _account_note() -> str:
+    """One sentence saying what this account actually holds, or nothing.
+
+    A deployment can serve several accounts through separate connectors, and a
+    client picks between them by name alone. Names mislead: an account called
+    "work" held ten active chats last month while the "personal" one held a
+    hundred and fifty nine, including most of the work. The model had no way to
+    know, so it asked the emptier one first and reported near-nothing.
+
+    Set ACCOUNT_NOTE per deployment; unset, tools read exactly as before.
+    """
+    note = (os.environ.get("ACCOUNT_NOTE") or "").strip()
+    return f" About this account: {note}" if note else ""
+
+
 def _tool_description(body: str, *, extra: str = "") -> str:
-    return body + extra + f" Full documentation: {TOOLS_REFERENCE_DOC_URL}"
+    return body + extra + _account_note() + f" Full documentation: {TOOLS_REFERENCE_DOC_URL}"
 
 
 _DESC_SEARCH_GLOBAL = _tool_description(
