@@ -7,6 +7,19 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
 
 ### Added
 
+- `transcribe_voice_message`: read-only text of one voice note or round video by
+  `chat_id` + `message_id`. Prefers the transcription Telegram already produced and
+  reuses the existing cache, so a repeat read costs no new recognition and says so
+  (`cached`). Distinguishes `ready`, `pending`, `rate_limited`, `unavailable`,
+  `not_voice` and `not_found` instead of returning an empty string. Round videos are
+  transcribed on request; the bulk path in `get_messages` still covers voice only.
+- `set_voice_caption`: puts an already-written caption under the caller's own voice
+  note or round video by editing that same message — no second message, no re-upload,
+  the media untouched. Refuses a message sent by someone else and anything that is not
+  a voice note or round video, and reads the message back afterwards, reporting
+  `mismatch` when the stored text differs from the one requested. The caption's wording
+  is never composed here.
+
 ### Changed
 
 ### Fixed

@@ -255,6 +255,37 @@ MessageIdInChat = Annotated[
     ),
 ]
 
+VoiceMessageId = Annotated[
+    int,
+    Field(
+        description=(
+            "Id of the voice note or round video itself (not of a reply to it), "
+            "as returned by get_messages."
+        )
+    ),
+]
+
+TranscribeForce = Annotated[
+    bool,
+    Field(
+        description=(
+            "Ask Telegram to recognise the message again even when its text is already "
+            "known. Telegram holds a long per-message cooldown after a transcription, so "
+            "use this only when the stored text is visibly wrong."
+        )
+    ),
+]
+
+VoiceCaption = Annotated[
+    str,
+    Field(
+        description=(
+            "The finished text to place under the voice message. Written and approved by "
+            "the operator; this server never composes or rewrites it."
+        )
+    ),
+]
+
 MessageIds = Annotated[
     list[int],
     Field(

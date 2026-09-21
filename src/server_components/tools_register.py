@@ -57,7 +57,10 @@ from src.server_components.mcp_tool_types import (
     SearchSource,
     ThreadScope,
     TopicsLimit,
+    TranscribeForce,
     UnreadOnly,
+    VoiceCaption,
+    VoiceMessageId,
 )
 from src.server_components.session_acl import enforce_session_acl
 from src.telemetry import metrics
@@ -71,6 +74,8 @@ from src.tools.messages import (
     send_message_impl,
     send_message_to_phone_impl,
     send_rich_message_impl,
+    set_voice_caption_impl,
+    transcribe_voice_message_impl,
 )
 from src.tools.mtproto import invoke_mtproto_impl
 from src.tools.search import search_messages_impl
@@ -150,6 +155,32 @@ _DESC_SEND_MESSAGE = _tool_description(
 
 _DESC_EDIT_MESSAGE = _tool_description(
     "Replace text of an existing message you can edit in this chat. Success: edit result dict. "
+)
+
+_DESC_TRANSCRIBE_VOICE = _tool_description(
+    "Text of ONE voice note or round video, by chat_id + message_id. READ-ONLY: nothing in "
+    "Telegram changes. Prefers what already exists — Telegram's own transcription, reused "
+    "from cache — so a repeat call costs no new recognition; `cached` says which it was. "
+    "Use it instead of pulling chat history when the question is only «what was said in "
+    "this voice». message_id is the id of the voice message itself, not of a reply to it. "
+    "Statuses: ready (text in `transcription`); pending (Telegram is still recognising — "
+    "ask again shortly, do not start another); rate_limited (per-message cooldown); "
+    "unavailable (Telegram returned no text); not_voice (the message carries no speech); "
+    "not_found. This tool does NOT write a caption and does NOT compose any text — "
+    "captioning is a separate, explicitly confirmed step (set_voice_caption). "
+)
+
+_DESC_SET_VOICE_CAPTION = _tool_description(
+    "Put an ALREADY-AGREED text under your own voice note or round video, by editing that "
+    "same message. WRITE operation, visible to the other person immediately. It does not "
+    "send a second message, does not re-upload or alter the audio, and does not compose "
+    "the text: the wording is the operator's, approved by them before this call. Refuses a "
+    "message sent by someone else (status not_editable) and anything that is not a voice "
+    "note or round video (not_voice; use edit_message for those). Reads the message back "
+    "afterwards and reports the caption that actually stands in the chat, so a silent "
+    "no-op cannot pass for success. parse_mode 'auto' detects markdown, which is what "
+    "makes **bold** numbers render. Never call this right after transcribing as if it were "
+    "the next step — transcription is reading, captioning changes what others see. "
 )
 
 _DESC_SEND_RICH_MESSAGE = _tool_description(
@@ -482,6 +513,43 @@ def register_tools(mcp: FastMCP) -> None:
             message,
             parse_mode,
         )
+
+    @mcp.tool(
+        description=_DESC_TRANSCRIBE_VOICE,
+        annotations=ToolAnnotations(
+            title="Transcribe voice message",
+            readOnlyHint=True,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+    )
+    @mcp_tool_with_restrictions("transcribe_voice_message")
+    async def transcribe_voice_message(
+        chat_id: ChatId,
+        message_id: VoiceMessageId,
+        force: TranscribeForce = False,
+    ) -> dict[str, Any]:
+        """Read the text of one voice note or round video (full doc URL in tool description)."""
+        return await transcribe_voice_message_impl(chat_id, message_id, force)
+
+    @mcp.tool(
+        description=_DESC_SET_VOICE_CAPTION,
+        annotations=ToolAnnotations(
+            title="Caption a voice message",
+            destructiveHint=True,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+    )
+    @mcp_tool_with_restrictions("set_voice_caption")
+    async def set_voice_caption(
+        chat_id: ChatId,
+        message_id: VoiceMessageId,
+        caption: VoiceCaption,
+        parse_mode: ParseMode = "auto",
+    ) -> dict[str, Any]:
+        """Put an agreed caption under your own voice message (full doc URL in tool description)."""
+        return await set_voice_caption_impl(chat_id, message_id, caption, parse_mode)
 
     @mcp.tool(
         description=_DESC_FIND_CHATS,
