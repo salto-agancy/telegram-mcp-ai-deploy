@@ -33,13 +33,15 @@ _WRITE_OPERATIONS = frozenset(
         "edit_message",
         "send_message_to_phone",
         "send_rich_message",
+        # captioning a voice note edits a message other people can already see
+        "set_voice_caption",
     }
 )
 _LIST_RESULT_OPERATIONS = frozenset(
     {"find_chats", "search_messages_globally", "recent_activity"}
 )
 _EMPTY_LANE_CHAT_SCOPED_OPERATIONS = frozenset(
-    {"get_messages", "get_media_content", "get_chat_info"}
+    {"get_messages", "get_media_content", "get_chat_info", "transcribe_voice_message"}
 )
 _EMPTY_LANE_PRE_DENY_OPERATIONS = (
     _LIST_RESULT_OPERATIONS
@@ -90,6 +92,8 @@ _CHAT_SCOPED_OPERATIONS = frozenset(
         "send_message",
         "edit_message",
         "send_rich_message",
+        "transcribe_voice_message",
+        "set_voice_caption",
     }
 )
 
