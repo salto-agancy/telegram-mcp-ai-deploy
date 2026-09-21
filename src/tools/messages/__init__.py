@@ -6,6 +6,7 @@ Submodules:
 - file_handling: File download and processing
 - sending: Message sending functionality
 - editing: Message editing functionality
+- voice: Voice notes — reading their text, and captioning one of your own
 - reading: Message reading functionality
 - phone: Phone number message sending
 """
@@ -24,6 +25,10 @@ from src.tools.messages.sending import (
     _send_files_to_entity,
     _send_message_or_files,
     send_message_impl,
+)
+from src.tools.messages.voice import (
+    set_voice_caption_impl,
+    transcribe_voice_message_impl,
 )
 from src.utils.discussion import get_post_discussion_info
 from src.utils.entity import get_entity_by_id
@@ -47,4 +52,6 @@ __all__ = [
     "send_message_impl",
     "send_message_to_phone_impl",
     "send_rich_message_impl",
+    "set_voice_caption_impl",
+    "transcribe_voice_message_impl",
 ]
