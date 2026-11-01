@@ -2,16 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
+import uuid
 from typing import Any
+
+from telethon.tl.types import DocumentAttributeVideo
 
 from src.client.connection import get_connected_client
 from src.server_components.attachment_tickets import get_attachment_ticket
 from src.tools.messages.core import _normalize_parse_mode, detect_message_formatting
 from src.tools.messages.file_handling import (
     _calculate_file_count,
+    download_url_to_disk,
+    find_large_urls,
     force_document_for_file_list,
     is_own_attachment_url,
+    is_video_filename,
+    mp4_video_info,
     prepare_files_for_send,
 )
 from src.tools.messages.security import _validate_file_paths
@@ -57,6 +66,58 @@ async def _send_files_to_entity(
         force_document=force_doc,
     )
     return _extract_first_message(result)
+
+
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+
+async def _send_large_in_background(
+    job_id: str,
+    client,
+    entity,
+    url: str,
+    message: str,
+    reply_to_msg_id: int | None,
+    parse_mode: str | None,
+) -> None:
+    path = None
+    try:
+        logger.info("[large-send %s] downloading %s", job_id, url.split("?", 1)[0])
+        path = await download_url_to_disk(url)
+        size = os.path.getsize(path)
+        kwargs: dict[str, Any] = {}
+        if is_video_filename(url):
+            kwargs["force_document"] = False
+            kwargs["supports_streaming"] = True
+            info = mp4_video_info(path)
+            if info:
+                duration, width, height = info
+                kwargs["attributes"] = [
+                    DocumentAttributeVideo(
+                        duration=duration, w=width, h=height, supports_streaming=True
+                    )
+                ]
+        else:
+            kwargs["force_document"] = True
+        logger.info("[large-send %s] uploading %d bytes to Telegram", job_id, size)
+        result = await client.send_file(
+            entity=entity,
+            file=path,
+            caption=message or None,
+            reply_to=reply_to_msg_id,
+            parse_mode=parse_mode,
+            **kwargs,
+        )
+        msg = _extract_first_message(result)
+        logger.info("[large-send %s] done, message_id=%s", job_id, getattr(msg, "id", None))
+    except Exception:
+        logger.exception("[large-send %s] failed", job_id)
+    finally:
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
 
 async def _send_message_or_files(
@@ -107,6 +168,35 @@ async def _send_message_or_files(
         file_list, validation_error = _validate_file_paths(files, operation, params)
         if validation_error or file_list is None:
             return validation_error or {}, None
+
+        # Big files (video): disk spool + background send — see file_handling.
+        large = await find_large_urls(file_list)
+        if large:
+            if len(file_list) != 1:
+                return {
+                    "ok": False,
+                    "error": "large files are sent one per message — pass a single URL",
+                }, None
+            job_id = uuid.uuid4().hex[:10]
+            task = asyncio.create_task(
+                _send_large_in_background(
+                    job_id, client, entity, file_list[0], message,
+                    reply_to_msg_id, parse_mode,
+                )
+            )
+            _BACKGROUND_TASKS.add(task)
+            task.add_done_callback(_BACKGROUND_TASKS.discard)
+            # Returned through the "error" slot on purpose: it is the final answer
+            # of the tool call (the message does not exist yet).
+            return {
+                "ok": True,
+                "status": "sending_in_background",
+                "job_id": job_id,
+                "note": (
+                    "Большой файл: качается на диск и отправляется в фоне. Видео на "
+                    "1 ГБ — порядка 5-15 минут. Проверить: get_messages по этому чату."
+                ),
+            }, None
 
         sent_message = await _send_files_to_entity(
             client, entity, file_list, message, effective_reply_to, parse_mode

@@ -270,6 +270,152 @@ async def _download_urls_to_bytes(file_list: list[str]) -> list[bytes | str]:
         return await asyncio.gather(*tasks)
 
 
+# ---------- Large files (video): disk spool + background send ----------
+# Small files keep the old in-memory path (max_file_size_mb). Anything bigger
+# (up to TG_LARGE_FILE_MAX_MB, Telegram's 2 GB) is streamed to disk — the
+# container has only ~320 MB RAM — and sent in a background task, because a
+# 1 GB upload outlives any MCP request (Cloudflare cuts at ~100 s).
+
+LARGE_SPOOL_DIR = "/tmp/tgmcp-large"
+_VIDEO_SUFFIXES = frozenset((".mp4", ".m4v", ".mov"))
+
+
+def large_file_max_bytes() -> int:
+    return int(os.getenv("TG_LARGE_FILE_MAX_MB", "2000")) * 1024 * 1024
+
+
+def is_video_filename(url_or_path: str) -> bool:
+    base = _basename_from_url_or_path(url_or_path).lower()
+    return any(base.endswith(s) for s in _VIDEO_SUFFIXES)
+
+
+async def find_large_urls(file_list: list[str]) -> list[str]:
+    """http(s) URLs whose Content-Length exceeds max_file_size_mb (HEAD request)."""
+    small_max = cfg().max_file_size_mb * 1024 * 1024
+    large: list[str] = []
+    urls = [
+        f for f in file_list
+        if f.startswith(("http://", "https://")) and not is_own_attachment_url(f)
+    ]
+    if not urls:
+        return large
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(30.0, connect=10.0), follow_redirects=False,
+        headers={"User-Agent": "fast-mcp-telegram/1.0"},
+    ) as http_client:
+        for url in urls:
+            is_safe, error_msg = _validate_url_security(url)
+            if not is_safe:
+                raise ValueError(f"Unsafe URL blocked: {error_msg}")
+            try:
+                resp = await http_client.head(url)
+                size = int(resp.headers.get("content-length") or 0)
+            except Exception:  # HEAD unsupported → fall back to the normal path
+                continue
+            if size > small_max:
+                if size > large_file_max_bytes():
+                    raise ValueError(
+                        f"File too large for Telegram: {size} bytes "
+                        f"(max: {large_file_max_bytes()} bytes)"
+                    )
+                large.append(url)
+    return large
+
+
+async def download_url_to_disk(url: str) -> str:
+    """Stream a URL to a temp file (no RAM spike). Returns the path."""
+    import tempfile
+
+    is_safe, error_msg = _validate_url_security(url)
+    if not is_safe:
+        raise ValueError(f"Unsafe URL blocked: {error_msg}")
+    os.makedirs(LARGE_SPOOL_DIR, exist_ok=True)
+    name = _basename_from_url_or_path(url) or "file"
+    fd, path = tempfile.mkstemp(prefix="dl-", suffix=f"-{unquote(name)}", dir=LARGE_SPOOL_DIR)
+    limit = large_file_max_bytes()
+    written = 0
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(120.0, connect=15.0), follow_redirects=False,
+            headers={"User-Agent": "fast-mcp-telegram/1.0"},
+        ) as http_client, http_client.stream("GET", url) as resp:
+            resp.raise_for_status()
+            with os.fdopen(fd, "wb") as out:
+                async for chunk in resp.aiter_bytes(4 * 1024 * 1024):
+                    written += len(chunk)
+                    if written > limit:
+                        raise ValueError(f"File too large: > {limit} bytes")
+                    out.write(chunk)
+    except Exception:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        raise
+    return path
+
+
+def mp4_video_info(path: str) -> tuple[int, int, int] | None:
+    """(duration_sec, width, height) from MP4 boxes (mvhd + video tkhd).
+
+    No ffprobe/hachoir in the image, and without these Telegram shows the video
+    as 0:00 with no proper player. Reads only box headers, never the media data.
+    """
+    import struct
+
+    def boxes(f, start: int, end: int):
+        pos = start
+        while pos + 8 <= end:
+            f.seek(pos)
+            hdr = f.read(8)
+            if len(hdr) < 8:
+                return
+            size, typ = struct.unpack(">I4s", hdr)
+            hlen = 8
+            if size == 1:
+                size = struct.unpack(">Q", f.read(8))[0]
+                hlen = 16
+            elif size == 0:
+                size = end - pos
+            if size < hlen:
+                return
+            yield typ, pos + hlen, pos + size
+            pos += size
+
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            total = f.tell()
+            moov = next(((s, e) for t, s, e in boxes(f, 0, total) if t == b"moov"), None)
+            if not moov:
+                return None
+            duration = 0
+            width = height = 0
+            for typ, s, e in boxes(f, *moov):
+                if typ == b"mvhd":
+                    f.seek(s)
+                    ver = f.read(1)[0]
+                    if ver == 1:
+                        f.seek(s + 4 + 16)
+                        timescale, dur = struct.unpack(">IQ", f.read(12))
+                    else:
+                        f.seek(s + 4 + 8)
+                        timescale, dur = struct.unpack(">II", f.read(8))
+                    duration = int(dur / timescale) if timescale else 0
+                elif typ == b"trak" and not width:
+                    for t2, s2, e2 in boxes(f, s, e):
+                        if t2 == b"tkhd":
+                            f.seek(e2 - 8)
+                            w, h = struct.unpack(">II", f.read(8))
+                            if w >> 16 and h >> 16:
+                                width, height = w >> 16, h >> 16
+            if duration and width and height:
+                return duration, width, height
+    except Exception:
+        logger.debug("mp4_video_info failed for %s", path, exc_info=True)
+    return None
+
+
 def _calculate_file_count(files: str | list[str] | None) -> int:
     """Calculate the number of files in the files parameter."""
     if not files:
