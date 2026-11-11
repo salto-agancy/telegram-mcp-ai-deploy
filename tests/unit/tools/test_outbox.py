@@ -116,6 +116,21 @@ async def test_owner_text_is_a_conflict_not_overwritten(outbox, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_owner_text_is_never_replaced_even_with_its_version(outbox, monkeypatch):
+    """Live incident 11.11.2026: a test prompt told the agent to replace on conflict and
+    the owner's real draft was overwritten. The owner's text is never replaced now."""
+    owner = _draft("мой настоящий черновик")
+    monkeypatch.setattr(
+        drafts, "_read_draft", AsyncMock(return_value=(owner, "Contact"))
+    )
+    res = await drafts.draft_save_impl(
+        "user:100000001", "текст агента", replace=True, if_version=owner["version"]
+    )
+    assert res["status"] == "conflict" and res["existing_is"] == "owner_text"
+    outbox.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_replace_needs_the_version_that_was_read(outbox, monkeypatch):
     monkeypatch.setattr(
         drafts, "_read_draft", AsyncMock(return_value=(_draft("мой текст"), "Contact"))

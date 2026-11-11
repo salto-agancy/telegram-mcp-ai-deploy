@@ -205,3 +205,26 @@ async def supersede_open_drafts(
     account: str, peer_id: int, topic_id: int | None, new_id: int
 ) -> int:
     return await call(_supersede, account, peer_id, topic_id, new_id)
+
+
+def _agent_wrote(
+    conn: sqlite3.Connection,
+    account: str,
+    peer_id: int,
+    topic_id: int | None,
+    text: str,
+) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM outbox WHERE account = ? AND peer_id = ? AND coalesce(topic_id, 0) = ? "
+        "AND kind = 'draft' AND text_agent = ? "
+        "AND status IN ('saved', 'waiting', 'superseded', 'already_there') LIMIT 1",
+        (account, peer_id, topic_id or 0, text),
+    ).fetchone()
+    return row is not None
+
+
+async def agent_wrote(
+    account: str, peer_id: int, topic_id: int | None, text: str
+) -> bool:
+    """Whether this exact text in the field was put there by an agent through this server."""
+    return await call(_agent_wrote, account, peer_id, topic_id, text)

@@ -688,12 +688,14 @@ def register_tools(mcp: FastMCP) -> None:
     @mcp.tool(
         description=_tool_description(
             "Leave a draft in a chat's input field. NEVER sends: the owner opens the chat, edits "
-            "and presses Send himself. If the field already holds a different text, nothing is "
-            "written and status=conflict returns that text — show both to the owner; replace only "
-            "with replace=true and if_version from that answer. The saved draft is read back from "
-            "Telegram before success is reported. operation_key makes a retry return the first "
-            "result instead of writing again. Use one draft for one message; several messages for "
-            "one chat go to scheduled/parking instead."
+            "and presses Send himself. If the field holds the OWNER'S own text, it is never "
+            "replaced: status=conflict returns it (existing_is=owner_text) — show both texts "
+            "to the owner and let him edit the field. Only an earlier AGENT draft "
+            "(existing_is=agent_draft) can be replaced, with replace=true and its if_version. "
+            "Every save is read back from Telegram. operation_key makes a retry write nothing. "
+            "A Telegram app that has this chat open may later overwrite the draft with its own "
+            "input field; outbox_report then shows it as cleared. One draft per chat or topic; "
+            "several messages for one chat go to scheduled/parking instead."
         ),
         annotations=ToolAnnotations(
             title="Save draft",

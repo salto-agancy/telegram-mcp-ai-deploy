@@ -183,28 +183,40 @@ async def draft_save_impl(
             "topic_id": topic_id,
         }
 
-    if current and not (replace and if_version == current["version"]):
-        oid = await store.record(
-            {
-                **base,
-                "status": "conflict",
-                "text_now": current["text"],
-                "version_now": current["version"],
-            }
+    if current:
+        # Only a draft an agent left may be replaced; the owner's own text never is,
+        # whatever the arguments (owner rule: "keep my text and show the conflict").
+        agent_wrote_it = await store.agent_wrote(
+            account, peer_id, topic_id, current["text"]
         )
-        return {
-            "ok": True,
-            "status": "conflict",
-            "outbox_id": oid,
-            "saved": False,
-            "account": account,
-            "chat": ref.text,
-            "title": title,
-            "topic_id": topic_id,
-            "existing_draft": current,
-            "how_to_replace": f"show both texts to the owner; if he decides to replace, repeat with "
-            f"replace=true and if_version='{current['version']}'",
-        }
+        if not (agent_wrote_it and replace and if_version == current["version"]):
+            oid = await store.record(
+                {
+                    **base,
+                    "status": "conflict",
+                    "text_now": current["text"],
+                    "version_now": current["version"],
+                }
+            )
+            return {
+                "ok": True,
+                "status": "conflict",
+                "outbox_id": oid,
+                "saved": False,
+                "account": account,
+                "chat": ref.text,
+                "title": title,
+                "topic_id": topic_id,
+                "existing_draft": current,
+                "existing_is": "agent_draft" if agent_wrote_it else "owner_text",
+                "how_to_resolve": (
+                    "the field holds the owner's own text: it is never replaced by a tool. "
+                    "Show both texts to the owner; he edits the field himself."
+                    if not agent_wrote_it
+                    else "the field holds an earlier agent draft; to replace it repeat with "
+                    f"replace=true and if_version='{current['version']}'"
+                ),
+            }
 
     reply_to = (
         types.InputReplyToMessage(reply_to_msg_id=topic_id, top_msg_id=topic_id)
