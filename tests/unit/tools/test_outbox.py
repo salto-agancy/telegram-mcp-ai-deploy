@@ -209,3 +209,23 @@ async def test_saved_messages_resolve_to_own_id():
     client.get_peer_id.return_value = 42
     entity, peer_id = await drafts._resolve(client, peers.parse_peer("me"))
     assert isinstance(entity, types.InputPeerSelf) and peer_id == 42
+
+
+@pytest.mark.asyncio
+async def test_agent_replacing_its_own_draft_is_not_an_owner_edit(outbox, monkeypatch):
+    first = AsyncMock(side_effect=[(None, "Contact"), (_draft("v1"), "Contact")])
+    monkeypatch.setattr(drafts, "_read_draft", first)
+    r1 = await drafts.draft_save_impl("user:100000001", "v1")
+    v1 = r1["draft"]["version"]
+    second = AsyncMock(
+        side_effect=[(_draft("v1"), "Contact"), (_draft("v2"), "Contact")]
+    )
+    monkeypatch.setattr(drafts, "_read_draft", second)
+    await drafts.draft_save_impl("user:100000001", "v2", replace=True, if_version=v1)
+
+    def status_of(conn, oid):
+        return conn.execute(
+            "SELECT status FROM outbox WHERE id = ?", (oid,)
+        ).fetchone()[0]
+
+    assert await store.call(status_of, r1["outbox_id"]) == "superseded"

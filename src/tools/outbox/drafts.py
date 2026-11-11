@@ -232,6 +232,8 @@ async def draft_save_impl(
         },
         {"replaced": current, "write_ms": write_ms, "read_ms": read_ms},
     )
+    if equal:
+        await store.supersede_open_drafts(account, peer_id, topic_id, oid)
     return {
         "ok": equal,
         "status": "saved" if equal else "readback_mismatch",

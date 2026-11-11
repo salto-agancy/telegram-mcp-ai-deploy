@@ -170,3 +170,38 @@ async def add_event(
     outbox_id: int, event: str, detail: dict | None = None, **updates
 ) -> None:
     await call(_event, outbox_id, event, detail or {}, updates)
+
+
+OPEN_DRAFT_STATES = ("saved", "waiting", "edited", "already_there")
+
+
+def _supersede(
+    conn: sqlite3.Connection,
+    account: str,
+    peer_id: int,
+    topic_id: int | None,
+    new_id: int,
+) -> int:
+    """Older open drafts of the same chat/topic were replaced by the agent, not edited by
+    the owner; mark them so the report does not blame the owner for the change."""
+    marks = ", ".join("?" * len(OPEN_DRAFT_STATES))
+    rows = conn.execute(
+        "SELECT id FROM outbox WHERE account = ? AND peer_id = ? AND coalesce(topic_id, 0) = ? "
+        f"AND kind = 'draft' AND id <> ? AND status IN ({marks})",
+        (account, peer_id, topic_id or 0, new_id, *OPEN_DRAFT_STATES),
+    ).fetchall()
+    for (oid,) in rows:
+        _event(
+            conn,
+            oid,
+            "superseded",
+            {"by": new_id},
+            {"status": "superseded", "result": f"outbox:{new_id}"},
+        )
+    return len(rows)
+
+
+async def supersede_open_drafts(
+    account: str, peer_id: int, topic_id: int | None, new_id: int
+) -> int:
+    return await call(_supersede, account, peer_id, topic_id, new_id)

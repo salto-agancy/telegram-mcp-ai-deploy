@@ -17,8 +17,8 @@ from src.client.connection import get_connected_client
 from src.tools.outbox import store
 from src.tools.outbox.drafts import _read_draft, account_label
 from src.tools.outbox.peers import PeerRef
+from src.tools.outbox.store import OPEN_DRAFT_STATES
 
-OPEN_DRAFT_STATES = ("saved", "waiting", "edited", "already_there")
 REFRESH_LIMIT = 50
 # An outgoing message counts as "this draft, sent" when it is at least this similar.
 SENT_MATCH = 0.5
@@ -32,6 +32,7 @@ STATUS_TEXT = {
     "cleared": "removed from the input field, not sent",
     "conflict": "not written: the field held the owner's text",
     "readback_mismatch": "Telegram returned a different text",
+    "superseded": "replaced by a later draft of an agent",
 }
 
 
