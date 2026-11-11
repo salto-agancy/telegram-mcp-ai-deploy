@@ -196,3 +196,16 @@ async def test_send_tools_are_not_registered_when_switched_off(monkeypatch):
         "edit_message",
         "set_voice_caption",
     }
+
+
+@pytest.mark.asyncio
+async def test_saved_messages_resolve_to_own_id():
+    """Regression (live, 11.11.2026): 'me' resolves to InputPeerSelf, which the sync
+    telethon.utils.get_peer_id cannot turn into an id."""
+    from telethon.tl import types
+
+    client = AsyncMock()
+    client.get_input_entity.return_value = types.InputPeerSelf()
+    client.get_peer_id.return_value = 42
+    entity, peer_id = await drafts._resolve(client, peers.parse_peer("me"))
+    assert isinstance(entity, types.InputPeerSelf) and peer_id == 42

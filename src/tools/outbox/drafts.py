@@ -12,7 +12,6 @@ import os
 import time
 from typing import Any
 
-from telethon import utils as tl_utils
 from telethon.tl import functions, types
 
 from src.client.connection import get_connected_client
@@ -39,7 +38,8 @@ def _draft_view(draft: Any) -> dict | None:
 
 async def _resolve(client, ref):
     entity = await client.get_input_entity(ref.telethon_target())
-    peer_id = tl_utils.get_peer_id(entity)
+    # The async variant resolves InputPeerSelf ('me'); telethon.utils.get_peer_id cannot.
+    peer_id = await client.get_peer_id(entity)
     check_resolved_id(peer_id)
     return entity, peer_id
 
