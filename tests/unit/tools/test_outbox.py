@@ -244,3 +244,23 @@ async def test_agent_replacing_its_own_draft_is_not_an_owner_edit(outbox, monkey
         ).fetchone()[0]
 
     assert await store.call(status_of, r1["outbox_id"]) == "superseded"
+
+
+def test_draft_writes_have_exactly_one_path():
+    """Owner-text protection lives in draft_save_impl. Any future tool, bulk ones
+    included, must go through it: a second direct SaveDraft/ClearAllDrafts call
+    anywhere in src would bypass the guard, so it fails this test."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[3] / "src"
+    hits = []
+    for path in root.rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        for token in ("SaveDraftRequest", "ClearAllDraftsRequest"):
+            hits += [(path.relative_to(root).as_posix(), token)] * text.count(token)
+    assert hits == [("tools/outbox/drafts.py", "SaveDraftRequest")]
+
+
+@pytest.mark.parametrize("method", ["messages.SaveDraft", "messages.ClearAllDrafts"])
+def test_raw_mtproto_cannot_write_drafts(method):
+    assert mtproto.is_read_method(method) is False
