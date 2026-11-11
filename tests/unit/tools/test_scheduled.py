@@ -206,3 +206,56 @@ def test_scheduled_writes_live_only_in_the_guarded_module():
         if "EditMessageRequest" in text or "DeleteScheduledMessagesRequest" in text:
             places.add(path.relative_to(root).as_posix())
     assert places == {"tools/outbox/scheduled.py"}
+
+
+@pytest.mark.asyncio
+async def test_index_state_is_written_and_read(db):
+    """Regression (live, 11.11.2026): the collector passes state fields by keyword."""
+    await store.call(scheduled._set_state, "work", listener="t1", last_tick="t2")
+    state = await store.call(scheduled._state, "work")
+    assert state[0]["listener"] == "t1" and state[0]["last_tick"] == "t2"
+
+
+class FakeClient:
+    """Just enough of TelegramClient for one collector tick."""
+
+    def __init__(self, dialogs, scheduled):
+        self._dialogs, self._scheduled, self.requests = dialogs, scheduled, []
+
+    async def iter_dialogs(self, limit=None, **_):
+        for d in self._dialogs[:limit]:
+            yield d
+
+    async def get_peer_id(self, entity):
+        return -entity.id
+
+    async def __call__(self, request):
+        self.requests.append(type(request).__name__)
+        return MagicMock(messages=self._scheduled)
+
+
+@pytest.mark.asyncio
+async def test_collector_tick_indexes_recent_dialogs(db, monkeypatch):
+    from telethon.tl import types
+
+    chat = types.Chat(
+        id=100,
+        title="G",
+        photo=types.ChatPhotoEmpty(),
+        participants_count=2,
+        date=NOW,
+        version=1,
+    )
+    when = dt.datetime(2027, 6, 12, 18, 32, 7, tzinfo=dt.UTC)
+    client = FakeClient(
+        [MagicMock(id=-100, entity=chat, input_entity=object())],
+        [live(7, when, "parked note")],
+    )
+    monkeypatch.setattr(scheduled, "SWEEP_PAUSE", 0)
+    collector = scheduled.Collector("work", AsyncMock(return_value=client))
+    collector._handler_on = client  # skip real event registration
+    await collector.tick()
+    res = await scheduled.scheduled_list_impl()
+    assert [i["ref"] for i in res["items"]] == ["work:chat:100:7"]
+    assert res["coverage"]["work"]["last_tick"]
+    assert client.requests == ["GetScheduledHistoryRequest"]

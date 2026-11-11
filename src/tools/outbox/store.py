@@ -96,19 +96,19 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
-def _run(fn, *args):
+def _run(fn, *args, **kwargs):
     conn = _connect()
     try:
-        out = fn(conn, *args)
+        out = fn(conn, *args, **kwargs)
         conn.commit()
         return out
     finally:
         conn.close()
 
 
-async def call(fn, *args):
+async def call(fn, *args, **kwargs):
     async with _lock:
-        return await asyncio.to_thread(_run, fn, *args)
+        return await asyncio.to_thread(_run, fn, *args, **kwargs)
 
 
 def _find_op(conn: sqlite3.Connection, account: str, operation_key: str) -> list[dict]:
