@@ -479,3 +479,35 @@ OutboxKind = Annotated[str, Field(description="draft | scheduled | parking")]
 OutboxRefresh = Annotated[
     bool, Field(description="Check this account's open drafts against Telegram now.")
 ]
+
+
+# --- Scheduled messages and parking ---
+
+ScheduledAccount = Annotated[
+    str, Field(description="personal | work; omit for both accounts.")
+]
+OptionalTypedChatRef = Annotated[
+    str, Field(description="Typed chat reference (see draft_get); omit for all chats.")
+]
+DateFromMsk = Annotated[
+    str, Field(description="From, Moscow time: YYYY-MM-DD or ISO datetime.")
+]
+DateToMsk = Annotated[
+    str, Field(description="To (a date includes the whole day), Moscow time.")
+]
+ScheduledKind = Annotated[str, Field(description="parking | real; omit for all.")]
+ScheduledChangeItems = Annotated[
+    list[dict],
+    Field(
+        description=(
+            "Items to change, each: {ref, expected_version, and one of: text, at_msk "
+            "(YYYY-MM-DDTHH:MM, Moscow), cancel: true}. ref and expected_version come from "
+            "scheduled_list. Only items of this connector's account are executed."
+        )
+    ),
+]
+FixtureCount = Annotated[int, Field(description="How many test groups (1-20).")]
+FixturePrefix = Annotated[str, Field(description="Title prefix of the test groups.")]
+FixtureBot = Annotated[
+    str, Field(description="Bot username invited as the second member.")
+]

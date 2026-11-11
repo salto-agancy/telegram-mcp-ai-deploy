@@ -140,8 +140,16 @@ class AuditMiddleware(Middleware):
         except Exception:
             return None
 
-    def _fire(self, *, tool: str, arguments: dict[str, Any] | None, ok: bool,
-              latency_ms: int, note: str, request_id: str | None) -> None:
+    def _fire(
+        self,
+        *,
+        tool: str,
+        arguments: dict[str, Any] | None,
+        ok: bool,
+        latency_ms: int,
+        note: str,
+        request_id: str | None,
+    ) -> None:
         """Queue one row. Never awaits, never raises — safe in a finally block."""
         row = (
             self._service,
@@ -184,5 +192,8 @@ class AuditMiddleware(Middleware):
             # operator already collects and rotates, not a file nobody replays.
             logger.warning(
                 "audit: journal write failed (%s) for tool=%s ok=%s latency_ms=%s",
-                type(exc).__name__, row[3], row[6], row[5],
+                type(exc).__name__,
+                row[3],
+                row[6],
+                row[5],
             )

@@ -99,9 +99,19 @@ async def lifespan(app: FastMCP):
     # Startup: anonymous telemetry (fire-and-forget heartbeat loop)
     _telemetry_task = asyncio.create_task(telemetry_task())
 
+    # Startup: index of scheduled messages and parking maintenance (SCHEDULED_INDEX=true)
+    from src.tools.outbox.scheduled import start_collector
+
+    scheduled_task = await start_collector()
+
     yield
 
     # Shutdown
+    if scheduled_task:
+        scheduled_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await scheduled_task
+
     if _telemetry_task:
         _telemetry_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

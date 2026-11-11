@@ -26,11 +26,16 @@ from src.server_components.mcp_tool_types import (
     ChatTypeComma,
     ContactFirstName,
     ContactLastName,
+    DateFromMsk,
+    DateToMsk,
     DraftReplace,
     DraftText,
     DraftVersion,
     FilesListParam,
     FilterParam,
+    FixtureBot,
+    FixtureCount,
+    FixturePrefix,
     IncludeArchivedDialogs,
     IncludeChannels,
     IncludeRunTelemetry,
@@ -46,6 +51,7 @@ from src.server_components.mcp_tool_types import (
     MethodFullName,
     MinDate,
     OperationKey,
+    OptionalTypedChatRef,
     OutboxAgent,
     OutboxKind,
     OutboxRefresh,
@@ -62,6 +68,9 @@ from src.server_components.mcp_tool_types import (
     ReplyToId,
     ReplyToMsgId,
     ResolveEntities,
+    ScheduledAccount,
+    ScheduledChangeItems,
+    ScheduledKind,
     SearchSource,
     ThreadScope,
     TopicIdParam,
@@ -89,7 +98,9 @@ from src.tools.messages import (
 )
 from src.tools.mtproto import invoke_mtproto_impl
 from src.tools.outbox.drafts import draft_get_impl, draft_save_impl
+from src.tools.outbox.fixtures import fixtures_enabled, test_chats_create_impl
 from src.tools.outbox.report import outbox_report_impl
+from src.tools.outbox.scheduled import scheduled_change_impl, scheduled_list_impl
 from src.tools.search import search_messages_impl
 
 # Canonical absolute URL for Tools-Reference (appended to each MCP tool description).
@@ -742,6 +753,75 @@ def register_tools(mcp: FastMCP) -> None:
     ) -> dict[str, Any]:
         """Outbox journal with owner edits and send status."""
         return await outbox_report_impl(since, agent, kind, refresh)
+
+    @mcp.tool(
+        description=_tool_description(
+            "All scheduled messages of BOTH accounts in one call, from the server's index: "
+            "chat, topic, date and time in Moscow, full text, version, and kind — parking "
+            "(more than 6 months ahead AND 23:59 Moscow: a parked note the server keeps "
+            "alive), looks_like_parking (only one of the two signs; never touched), or real. "
+            "set_by tells an agent's item from one the owner set on the phone. coverage shows, "
+            "per account, when the index was last refreshed. Filters: account, chat_id, "
+            "date_from/date_to (Moscow), kind. Use ref + version with scheduled_change."
+        ),
+        annotations=ToolAnnotations(
+            title="Scheduled messages",
+            readOnlyHint=True,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+    )
+    @mcp_tool_with_restrictions("scheduled_list")
+    async def scheduled_list(
+        account: ScheduledAccount = None,
+        chat_id: OptionalTypedChatRef = None,
+        date_from: DateFromMsk = None,
+        date_to: DateToMsk = None,
+        kind: ScheduledKind = None,
+    ) -> dict[str, Any]:
+        """Scheduled messages of both accounts (index)."""
+        return await scheduled_list_impl(account, chat_id, date_from, date_to, kind)
+
+    @mcp.tool(
+        description=_tool_description(
+            "Change text, move the date, or cancel CHOSEN scheduled messages of this "
+            "connector's account. Each item names its ref and the version you read; if the "
+            "owner changed it on the phone since, the item is a conflict and untouched. "
+            "Result per item: changed / cancelled / conflict / gone / other_account / error. "
+            "operation_key makes a retry after a lost connection change nothing twice. "
+            "Never sends anything now."
+        ),
+        annotations=ToolAnnotations(
+            title="Change scheduled messages",
+            destructiveHint=True,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+    )
+    @mcp_tool_with_restrictions("scheduled_change")
+    async def scheduled_change(
+        items: ScheduledChangeItems,
+        operation_key: OperationKey = None,
+    ) -> dict[str, Any]:
+        """Change or cancel chosen scheduled messages."""
+        return await scheduled_change_impl(items, operation_key)
+
+    if fixtures_enabled():
+
+        @mcp.tool(
+            description="Create archived test groups for write tests (temporary fixture tool).",
+            annotations=ToolAnnotations(
+                title="Create test chats", destructiveHint=False, openWorldHint=True
+            ),
+        )
+        @mcp_tool_with_restrictions("test_chats_create")
+        async def test_chats_create(
+            count: FixtureCount = 20,
+            prefix: FixturePrefix = "MCP-тест-",
+            bot_username: FixtureBot = "salto_ops_admin_bot",
+        ) -> dict[str, Any]:
+            """Create test groups once."""
+            return await test_chats_create_impl(count, prefix, bot_username)
 
     @_tool_if(
         instant_send,
