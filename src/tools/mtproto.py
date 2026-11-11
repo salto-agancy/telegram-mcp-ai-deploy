@@ -33,6 +33,32 @@ DANGEROUS_METHODS = {
     "channels.DeleteMessages",
 }
 
+# Read-only mode (MTPROTO_READ_ONLY=true): only methods that read are let through.
+# Writes go through dedicated tools that check recipient, date, order and repeats;
+# a raw write would skip all of that. Prefix-based on purpose: a new Telegram method
+# is refused until someone looks at it.
+_READ_PREFIXES = ("Get", "Search", "Resolve", "Check")
+# Look like reads but act: press a bot button, bump view counters, touch login state.
+_READ_LOOKALIKES = {
+    "messages.GetBotCallbackAnswer",
+    "messages.GetMessagesViews",
+}
+_DENIED_NAMESPACES = {"auth"}
+
+
+def is_read_method(normalized_method: str) -> bool:
+    namespace, _, name = normalized_method.rpartition(".")
+    if namespace in _DENIED_NAMESPACES or normalized_method in _READ_LOOKALIKES:
+        return False
+    return name.startswith(_READ_PREFIXES)
+
+
+def mtproto_read_only() -> bool:
+    import os
+
+    return (os.environ.get("MTPROTO_READ_ONLY") or "").strip().lower() in ("1", "true", "yes")
+
+
 # Reverse mapping: Telethon exception class -> Telegram RPC error code (from Telethon guts)
 _RPC_CLASS_TO_CODE: dict[type, str] = {
     cls: code for code, cls in rpc_errors_dict.items()
@@ -377,6 +403,17 @@ async def invoke_mtproto_impl(
                     "params_json": params_json,
                 },
                 exception=e,
+            )
+
+        if mtproto_read_only() and not is_read_method(normalized_method):
+            return log_and_build_error(
+                operation="invoke_mtproto",
+                error_message=(
+                    f"Method '{normalized_method}' is refused: raw MTProto is read-only on this "
+                    "server. Drafts go through draft_save; scheduled messages and parking "
+                    "through the scheduling tools."
+                ),
+                params={"method_full_name": method_full_name, "normalized_method": normalized_method},
             )
 
         # Check for dangerous methods unless explicitly allowed

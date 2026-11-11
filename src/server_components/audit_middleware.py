@@ -64,6 +64,14 @@ def input_hash(args: dict[str, Any] | None) -> str:
         return ""
 
 
+def _with_agent(note: str) -> str:
+    """Claude and ChatGPT share one session token; the OAuth proxy tells them apart."""
+    from src.tools.outbox.agent import current_agent
+
+    label = f"agent={current_agent()}"
+    return f"{label}; {note}" if note else label
+
+
 def _session_fingerprint() -> str | None:
     """Stable, non-reversible id of the calling session.
 
@@ -145,7 +153,7 @@ class AuditMiddleware(Middleware):
             ok,
             None,  # row_count: results are free-form, a generic count would lie
             input_hash(arguments),
-            (note or None),
+            _with_agent(note),
         )
         try:
             task = asyncio.get_running_loop().create_task(self._write(row))

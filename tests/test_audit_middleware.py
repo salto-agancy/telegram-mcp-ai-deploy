@@ -84,7 +84,7 @@ class TestCallRecording:
         (service, _subject, _scopes, tool, request_id, latency, ok, _rows, sha,
          note), = written
         assert (service, tool, request_id, ok, note) == (
-            "telegram-test", "search_messages", "req-1", True, None)
+            "telegram-test", "search_messages", "req-1", True, "agent=unknown")
         assert latency >= 0 and len(sha) == 64
 
     @pytest.mark.asyncio
@@ -109,7 +109,7 @@ class TestCallRecording:
             await middleware.on_call_tool(context, call_next)
         await asyncio.sleep(0)  # let the detached write task run
         assert written[0][6] is False
-        assert written[0][9] == "ValueError"
+        assert written[0][9] == "agent=unknown; ValueError"
         # The message could quote a chat id or a phone number; only the class travels.
         assert "chat 7" not in str(written[0])
 
@@ -147,3 +147,16 @@ class TestRegistration:
         )
         attached = [call[0][0] for call in mcp.add_middleware.call_args_list]
         assert isinstance(attached[-1], AuditMiddleware)
+
+
+def test_agent_label_from_proxy_header(monkeypatch):
+    """Claude and ChatGPT share one session token; the proxy's header names the agent."""
+    from src.server_components import audit_middleware as am
+    from src.tools.outbox import agent
+
+    monkeypatch.setattr(
+        "fastmcp.server.dependencies.get_http_headers",
+        lambda *a, **k: {agent.AGENT_HEADER: "ChatGPT"},
+    )
+    assert am._with_agent("") == "agent=chatgpt"
+    assert am._with_agent("ValueError") == "agent=chatgpt; ValueError"

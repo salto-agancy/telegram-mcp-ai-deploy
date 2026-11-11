@@ -25,6 +25,9 @@ from src.server_components.mcp_tool_types import (
     ChatId,
     ChatTypeComma,
     ContactFirstName,
+    DraftReplace,
+    DraftText,
+    DraftVersion,
     ContactLastName,
     FilesListParam,
     FilterParam,
@@ -42,6 +45,11 @@ from src.server_components.mcp_tool_types import (
     MessageIds,
     MethodFullName,
     MinDate,
+    OperationKey,
+    OutboxAgent,
+    OutboxKind,
+    OutboxRefresh,
+    OutboxSince,
     ParamsJson,
     ParseMode,
     PhoneE164,
@@ -56,8 +64,10 @@ from src.server_components.mcp_tool_types import (
     ResolveEntities,
     SearchSource,
     ThreadScope,
+    TopicIdParam,
     TopicsLimit,
     TranscribeForce,
+    TypedChatRef,
     UnreadOnly,
     VoiceCaption,
     VoiceMessageId,
@@ -78,6 +88,8 @@ from src.tools.messages import (
     transcribe_voice_message_impl,
 )
 from src.tools.mtproto import invoke_mtproto_impl
+from src.tools.outbox.drafts import draft_get_impl, draft_save_impl
+from src.tools.outbox.report import outbox_report_impl
 from src.tools.search import search_messages_impl
 
 # Canonical absolute URL for Tools-Reference (appended to each MCP tool description).
@@ -102,7 +114,12 @@ def _account_note() -> str:
 
 
 def _tool_description(body: str, *, extra: str = "") -> str:
-    return body + extra + _account_note() + f" Full documentation: {TOOLS_REFERENCE_DOC_URL}"
+    return (
+        body
+        + extra
+        + _account_note()
+        + f" Full documentation: {TOOLS_REFERENCE_DOC_URL}"
+    )
 
 
 _DESC_SEARCH_GLOBAL = _tool_description(
@@ -353,7 +370,23 @@ def mcp_tool_with_restrictions(
     return decorator
 
 
+def instant_send_enabled() -> bool:
+    """TELEGRAM_INSTANT_SEND=false removes every tool that puts text in front of a person
+    at once or changes what was already sent. The owner decided (10.11.2026) that agents
+    leave drafts and scheduled messages; he presses Send himself."""
+    return (os.environ.get("TELEGRAM_INSTANT_SEND") or "true").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+    )
+
+
 def register_tools(mcp: FastMCP) -> None:
+    instant_send = instant_send_enabled()
+
+    def _tool_if(enabled: bool, **tool_kwargs):
+        return mcp.tool(**tool_kwargs) if enabled else (lambda func: func)
+
     @mcp.tool(
         description=_DESC_SEARCH_GLOBAL,
         annotations=ToolAnnotations(
@@ -471,7 +504,8 @@ def register_tools(mcp: FastMCP) -> None:
         """Open a public Yandex.Disk link and inline its images (full doc URL in tool description)."""
         return await get_yandex_disk_content_impl(public_url, path)
 
-    @mcp.tool(
+    @_tool_if(
+        instant_send,
         description=_DESC_SEND_MESSAGE,
         annotations=ToolAnnotations(
             title="Send message",
@@ -490,7 +524,8 @@ def register_tools(mcp: FastMCP) -> None:
         """Send text or media to a chat (full doc URL in tool description)."""
         return await send_message_impl(chat_id, message, reply_to_id, parse_mode, files)
 
-    @mcp.tool(
+    @_tool_if(
+        instant_send,
         description=_DESC_EDIT_MESSAGE,
         annotations=ToolAnnotations(
             title="Edit message",
@@ -532,7 +567,8 @@ def register_tools(mcp: FastMCP) -> None:
         """Read the text of one voice note or round video (full doc URL in tool description)."""
         return await transcribe_voice_message_impl(chat_id, message_id, force)
 
-    @mcp.tool(
+    @_tool_if(
+        instant_send,
         description=_DESC_SET_VOICE_CAPTION,
         annotations=ToolAnnotations(
             title="Caption a voice message",
@@ -628,6 +664,85 @@ def register_tools(mcp: FastMCP) -> None:
         return await get_chat_info_impl(chat_id, topics_limit=topics_limit)
 
     @mcp.tool(
+        description=_tool_description(
+            "Read the draft that stands in a chat's input field right now, from Telegram. "
+            "chat_id is typed: 'me', 'user:<id>', 'chat:<id>', 'channel:<id>', '@username' or "
+            "a t.me link; a bare number is refused. topic_id reads a forum topic's own draft. "
+            "Returns the text and its version; pass that version to draft_save to replace it."
+        ),
+        annotations=ToolAnnotations(
+            title="Get draft",
+            readOnlyHint=True,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+    )
+    @mcp_tool_with_restrictions("draft_get")
+    async def draft_get(
+        chat_id: TypedChatRef,
+        topic_id: TopicIdParam = None,
+    ) -> dict[str, Any]:
+        """Read a chat's current draft (never writes)."""
+        return await draft_get_impl(chat_id, topic_id)
+
+    @mcp.tool(
+        description=_tool_description(
+            "Leave a draft in a chat's input field. NEVER sends: the owner opens the chat, edits "
+            "and presses Send himself. If the field already holds a different text, nothing is "
+            "written and status=conflict returns that text — show both to the owner; replace only "
+            "with replace=true and if_version from that answer. The saved draft is read back from "
+            "Telegram before success is reported. operation_key makes a retry return the first "
+            "result instead of writing again. Use one draft for one message; several messages for "
+            "one chat go to scheduled/parking instead."
+        ),
+        annotations=ToolAnnotations(
+            title="Save draft",
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+    )
+    @mcp_tool_with_restrictions("draft_save")
+    async def draft_save(
+        chat_id: TypedChatRef,
+        text: DraftText,
+        topic_id: TopicIdParam = None,
+        if_version: DraftVersion = None,
+        replace: DraftReplace = False,
+        operation_key: OperationKey = None,
+    ) -> dict[str, Any]:
+        """Leave a draft (never sends)."""
+        return await draft_save_impl(
+            chat_id, text, topic_id, if_version, replace, operation_key
+        )
+
+    @mcp.tool(
+        description=_tool_description(
+            "Journal of what agents left in Telegram (drafts, scheduled, parking): which agent "
+            "(claude, chatgpt), when, which chat, the agent's text, what stands there now, how much "
+            "the owner changed it (edit_ratio 0..1), and whether it was sent. refresh=true checks "
+            "this account's open drafts against Telegram now. Filters: since (ISO, default 7 days), "
+            "agent, kind."
+        ),
+        annotations=ToolAnnotations(
+            title="Outbox report",
+            readOnlyHint=True,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+    )
+    @mcp_tool_with_restrictions("outbox_report")
+    async def outbox_report(
+        since: OutboxSince = None,
+        agent: OutboxAgent = None,
+        kind: OutboxKind = None,
+        refresh: OutboxRefresh = True,
+    ) -> dict[str, Any]:
+        """Outbox journal with owner edits and send status."""
+        return await outbox_report_impl(since, agent, kind, refresh)
+
+    @_tool_if(
+        instant_send,
         description=_DESC_SEND_PHONE,
         annotations=ToolAnnotations(
             title="Send message to phone",
@@ -658,7 +773,8 @@ def register_tools(mcp: FastMCP) -> None:
             files=files,
         )
 
-    @mcp.tool(
+    @_tool_if(
+        instant_send,
         description=_DESC_SEND_RICH_MESSAGE,
         annotations=ToolAnnotations(
             title="Send rich message",

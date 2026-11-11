@@ -174,7 +174,9 @@ IncludeChannels = Annotated[
 
 IncludeArchivedDialogs = Annotated[
     bool,
-    Field(description="If true, also scan dialogs the owner moved to the archive folder."),
+    Field(
+        description="If true, also scan dialogs the owner moved to the archive folder."
+    ),
 ]
 
 IncludeRunTelemetry = Annotated[
@@ -436,4 +438,44 @@ ResolveEntities = Annotated[
             "If true, resolve string/int peer-like fields to TL Input* entities before invoke."
         )
     ),
+]
+
+
+# --- Outbox: drafts and the journal of what agents left ---
+
+TypedChatRef = Annotated[
+    str,
+    Field(
+        description=(
+            "Typed chat reference: 'me', 'user:<id>', 'chat:<id>' (basic group), "
+            "'channel:<id>' (supergroup or channel), '@username' or a t.me link. "
+            "A bare number is refused."
+        )
+    ),
+]
+DraftText = Annotated[str, Field(description="Full draft text, up to 4096 characters.")]
+TopicIdParam = Annotated[
+    int, Field(description="Forum topic id; omit for the chat itself.")
+]
+DraftVersion = Annotated[
+    str,
+    Field(description="Version of the draft being replaced, as returned by draft_get."),
+]
+DraftReplace = Annotated[
+    bool,
+    Field(description="Replace the owner's text in the field; requires if_version."),
+]
+OperationKey = Annotated[
+    str,
+    Field(
+        description="Client-chosen key; a retry with the same key writes nothing new."
+    ),
+]
+OutboxSince = Annotated[
+    str, Field(description="ISO date or datetime; default 7 days ago.")
+]
+OutboxAgent = Annotated[str, Field(description="claude | chatgpt | unknown")]
+OutboxKind = Annotated[str, Field(description="draft | scheduled | parking")]
+OutboxRefresh = Annotated[
+    bool, Field(description="Check this account's open drafts against Telegram now.")
 ]

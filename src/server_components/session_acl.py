@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 _WRITE_OPERATIONS = frozenset(
     {
         "send_message",
+        "draft_save",
         "edit_message",
         "send_message_to_phone",
         "send_rich_message",
