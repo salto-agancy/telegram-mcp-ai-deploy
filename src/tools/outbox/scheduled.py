@@ -386,8 +386,15 @@ class Collector:
                 continue
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                logger.exception("scheduled index tick failed")
+            except Exception as e:
+                import traceback
+
+                logger.error(
+                    "scheduled index tick failed: %s: %s\n%s",
+                    type(e).__name__,
+                    e,
+                    traceback.format_exc(limit=6),
+                )
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._wait_dirty(), timeout=TICK_SECONDS)
 
