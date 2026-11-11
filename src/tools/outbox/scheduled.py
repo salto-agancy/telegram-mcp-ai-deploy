@@ -322,14 +322,20 @@ class Collector:
         entity = await client.get_entity(peer_id)
         return await fetch_chat(client, self.account, entity)
 
-    async def tick(self) -> None:
-        client = await self._client()
+    async def _drain(self, client) -> set[int]:
         seen: set[int] = set()
         while not self._dirty.empty():
             pid = self._dirty.get_nowait()
             if pid not in seen:
                 seen.add(pid)
                 await self.refresh_peer(client, pid)
+        if seen:
+            await store.call(_set_state, self.account, last_tick=store.now_iso())
+        return seen
+
+    async def tick(self) -> None:
+        client = await self._client()
+        seen = await self._drain(client)
         for pid in await store.call(_chats_with_items, self.account):
             if pid not in seen:
                 seen.add(pid)
@@ -349,6 +355,9 @@ class Collector:
         await store.call(_set_state, self.account, last_sweep_start=store.now_iso())
         n = 0
         async for d in client.iter_dialogs():
+            await self._drain(
+                client
+            )  # a phone change must not wait for the whole sweep
             if not _scannable(d.entity):
                 continue
             await fetch_chat(client, self.account, d.entity, d.input_entity)

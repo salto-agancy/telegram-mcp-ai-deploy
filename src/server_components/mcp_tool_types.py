@@ -511,3 +511,17 @@ FixturePrefix = Annotated[str, Field(description="Title prefix of the test group
 FixtureBot = Annotated[
     str, Field(description="Bot username invited as the second member.")
 ]
+BatchMode = Annotated[str, Field(description="preview (check, write nothing) | apply")]
+BatchItems = Annotated[
+    list[dict],
+    Field(
+        description=(
+            "Rows: {to (typed chat ref), text, at_msk (YYYY-MM-DDTHH:MM Moscow; omit = parking), "
+            "topic_id?, account? (personal|work, default this connector)}. Order of rows for one "
+            "chat is kept."
+        )
+    ),
+]
+OperationId = Annotated[
+    str, Field(description="operation_key returned by schedule_batch apply.")
+]

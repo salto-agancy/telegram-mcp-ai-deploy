@@ -32,6 +32,7 @@ _WRITE_OPERATIONS = frozenset(
         "send_message",
         "draft_save",
         "scheduled_change",
+        "schedule_batch",
         "test_chats_create",
         "edit_message",
         "send_message_to_phone",

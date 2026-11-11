@@ -21,6 +21,8 @@ from src.server_components.mcp_tool_types import (
     ActivityUntil,
     AllowDangerous,
     AutoExpandBatches,
+    BatchItems,
+    BatchMode,
     Brief,
     ChatId,
     ChatTypeComma,
@@ -50,6 +52,7 @@ from src.server_components.mcp_tool_types import (
     MessageIds,
     MethodFullName,
     MinDate,
+    OperationId,
     OperationKey,
     OptionalTypedChatRef,
     OutboxAgent,
@@ -97,6 +100,7 @@ from src.tools.messages import (
     transcribe_voice_message_impl,
 )
 from src.tools.mtproto import invoke_mtproto_impl
+from src.tools.outbox.batch import operation_status_impl, schedule_batch_impl
 from src.tools.outbox.drafts import draft_get_impl, draft_save_impl
 from src.tools.outbox.fixtures import fixtures_enabled, test_chats_create_impl
 from src.tools.outbox.report import outbox_report_impl
@@ -805,6 +809,53 @@ def register_tools(mcp: FastMCP) -> None:
     ) -> dict[str, Any]:
         """Change or cancel chosen scheduled messages."""
         return await scheduled_change_impl(items, operation_key)
+
+    @mcp.tool(
+        description=_tool_description(
+            "Put a batch of messages into Telegram's scheduled queue — never sends now. "
+            "preview: every row checked by the server and shown with account, chat title, "
+            "topic, full text, Moscow date and kind; nothing is written. apply: same rows plus "
+            "an operation_key; returns at once, Telegram confirmations go to operation_status. "
+            "A row without at_msk becomes parking (23:59 Moscow a year ahead, kept alive by the "
+            "server, sent by the owner himself). Order of rows for one chat is kept. Rows "
+            "beyond Telegram's ~1 year limit or above 100 per chat are refused, not queued. "
+            "Retrying apply with the same operation_key never duplicates. Apply only when the "
+            "owner asked to schedule and every recipient is resolved; if he asked to prepare, "
+            "stop at preview."
+        ),
+        annotations=ToolAnnotations(
+            title="Schedule a batch",
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+    )
+    @mcp_tool_with_restrictions("schedule_batch")
+    async def schedule_batch(
+        mode: BatchMode,
+        items: BatchItems,
+        operation_key: OperationKey = None,
+    ) -> dict[str, Any]:
+        """Preview or apply a batch of scheduled messages."""
+        return await schedule_batch_impl(mode, items, operation_key)
+
+    @mcp.tool(
+        description=_tool_description(
+            "Per-row result of a schedule_batch apply: scheduled (Telegram accepted, with its "
+            "message id), scheduled_earlier (accepted before a retry), failed, and whether the "
+            "operation is still running."
+        ),
+        annotations=ToolAnnotations(
+            title="Operation status",
+            readOnlyHint=True,
+            idempotentHint=True,
+            openWorldHint=True,
+        ),
+    )
+    @mcp_tool_with_restrictions("operation_status")
+    async def operation_status(operation_id: OperationId) -> dict[str, Any]:
+        """Status of a batch operation."""
+        return await operation_status_impl(operation_id)
 
     if fixtures_enabled():
 
