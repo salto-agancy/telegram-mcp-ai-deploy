@@ -129,9 +129,7 @@ def _setup_error_fragment(request: Request, error: str):
     return _fragment(request, "fragments/error.html", {"error": error})
 
 
-def _bearer_token_and_session_path(
-    session_dir: Path, raw_token: str
-) -> tuple[str, Path]:
+def _bearer_token_and_session_path(session_dir: Path, raw_token: str) -> tuple[str, Path]:
     """Validate bearer token and return confined session file path."""
     token = validate_session_token(raw_token)
     return token, session_file_path(session_dir, token)
@@ -153,14 +151,10 @@ def _setup_token_path_error_fragment(
 ) -> Any:
     """Map token/path resolution errors to setup HTML fragments."""
     if isinstance(exc, InvalidSessionTokenError):
-        return _fragment(
-            request, template, {"error": INVALID_BEARER_TOKEN_FORMAT_MESSAGE}
-        )
+        return _fragment(request, template, {"error": INVALID_BEARER_TOKEN_FORMAT_MESSAGE})
     if isinstance(exc, OSError):
         logger.warning("Session path access failed: %s", exc)
-        return _fragment(
-            request, template, {"error": SESSION_PATH_ACCESS_ERROR_MESSAGE}
-        )
+        return _fragment(request, template, {"error": SESSION_PATH_ACCESS_ERROR_MESSAGE})
     raise exc
 
 
@@ -286,10 +280,7 @@ async def _persist_session_and_generate_config(
 
     domain = cfg().domain
     header_config_json = generate_mcp_config_json(
-        ServerMode.HTTP_AUTH,
-        session_name="",
-        bearer_token=token,
-        domain=domain,
+        ServerMode.HTTP_AUTH, session_name="", bearer_token=token, domain=domain,
     )
     url_config = generate_url_based_config(domain or "your-server.com", token)
     url_config_json = json.dumps(url_config, indent=2)
@@ -303,8 +294,7 @@ async def _persist_session_and_generate_config(
         )
 
     return _fragment(
-        request,
-        "fragments/config.html",
+        request, "fragments/config.html",
         {
             "setup_id": setup_id,
             "token": token,
@@ -344,11 +334,7 @@ async def _complete_qr_login(
         authorized_client = qr_mgr.get_client(qr_session_id)
 
     response = await _persist_session_and_generate_config(
-        request,
-        authorized_client,
-        state["session_path"],
-        setup_id,
-        state=state,
+        request, authorized_client, state["session_path"], setup_id, state=state,
     )
 
     # HTMX re-entry guard: store completed state so duplicate polls
@@ -423,10 +409,7 @@ async def setup_generate(request: Request):
 
     desired_token = state.get("desired_token")
     response = await _persist_session_and_generate_config(
-        request,
-        client,
-        temp_session_path,
-        setup_id,
+        request, client, temp_session_path, setup_id,
         desired_token=desired_token,
     )
 
@@ -481,9 +464,9 @@ def register_web_setup_routes(mcp_app):
             logger.info(
                 "Code sent for phone %s: type=%s, phone_code_hash=%s, timeout=%s",
                 masked,
-                getattr(sent, "type", None),
-                getattr(sent, "phone_code_hash", None),
-                getattr(sent, "timeout", None),
+                getattr(sent, 'type', None),
+                getattr(sent, 'phone_code_hash', None),
+                getattr(sent, 'timeout', None),
             )
         except PhoneNumberFloodError:
             await client.disconnect()
@@ -652,7 +635,8 @@ def register_web_setup_routes(mcp_app):
         # Session needs reauthorization - create temp session for reauth
         setup_id = str(int(time.time() * 1000))
         temp_session_path = (
-            cfg().session_directory / f"{REAUTH_SESSION_PREFIX}{setup_id}.session"
+            cfg().session_directory
+            / f"{REAUTH_SESSION_PREFIX}{setup_id}.session"
         )
 
         # Copy existing session to temp location
@@ -720,9 +704,9 @@ def register_web_setup_routes(mcp_app):
             logger.info(
                 "Reauthorization code sent for phone %s: type=%s, phone_code_hash=%s, timeout=%s",
                 mask_phone_number(phone_raw),
-                getattr(sent, "type", None),
-                getattr(sent, "phone_code_hash", None),
-                getattr(sent, "timeout", None),
+                getattr(sent, 'type', None),
+                getattr(sent, 'phone_code_hash', None),
+                getattr(sent, 'timeout', None),
             )
         except PhoneNumberFloodError:
             return _fragment(
