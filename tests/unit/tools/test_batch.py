@@ -172,13 +172,16 @@ async def test_telegram_duplicate_is_reported_as_accepted_earlier(env, monkeypat
 
 
 def test_send_message_request_lives_only_in_the_batch_module():
+    """Raw sends live in two vetted places: the scheduled batch and send.py, whose
+    per-recipient gate (Saved Messages, test chats, or instant send on) is tested in
+    test_send.py. A third place would bypass both."""
     root = pathlib.Path(__file__).resolve().parents[3] / "src"
     places = {
         p.relative_to(root).as_posix()
         for p in root.rglob("*.py")
         if "SendMessageRequest" in p.read_text(encoding="utf-8")
     }
-    assert places == {"tools/outbox/batch.py"}
+    assert places == {"tools/outbox/batch.py", "tools/outbox/send.py"}
 
 
 def test_store_has_no_duplicate_rows_per_operation_seq(tmp_path, monkeypatch):

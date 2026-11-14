@@ -52,6 +52,7 @@ from src.server_components.mcp_tool_types import (
     MessageIds,
     MethodFullName,
     MinDate,
+    MoreMessages,
     OperationId,
     OperationKey,
     OptionalTypedChatRef,
@@ -75,6 +76,7 @@ from src.server_components.mcp_tool_types import (
     ScheduledChangeItems,
     ScheduledKind,
     SearchSource,
+    SendFallback,
     ThreadScope,
     TopicIdParam,
     TopicsLimit,
@@ -93,7 +95,6 @@ from src.tools.external import get_yandex_disk_content_impl
 from src.tools.messages import (
     edit_message_impl,
     get_media_content_impl,
-    send_message_impl,
     send_message_to_phone_impl,
     send_rich_message_impl,
     set_voice_caption_impl,
@@ -102,9 +103,14 @@ from src.tools.messages import (
 from src.tools.mtproto import invoke_mtproto_impl
 from src.tools.outbox.batch import operation_status_impl, schedule_batch_impl
 from src.tools.outbox.drafts import draft_get_impl, draft_save_impl
-from src.tools.outbox.fixtures import fixtures_enabled, test_chats_create_impl
+from src.tools.outbox.fixtures import (
+    FIXTURE_PREFIX,
+    fixtures_enabled,
+    test_chats_create_impl,
+)
 from src.tools.outbox.report import outbox_report_impl
 from src.tools.outbox.scheduled import scheduled_change_impl, scheduled_list_impl
+from src.tools.outbox.send import instant_send_enabled, send_message_now
 from src.tools.search import search_messages_impl
 
 # Canonical absolute URL for Tools-Reference (appended to each MCP tool description).
@@ -167,6 +173,9 @@ _DESC_GET_MEDIA_CONTENT = _tool_description(
     "URL. Non-image files return a short text note plus their download URL; voice / "
     "round video return a note pointing at get_messages field `transcription`. "
     "Limits: max 6 images per call; originals over 5 MB are skipped with a note. "
+    "as_markdown=true («переведи файл в Markdown», «что в документе»): docx, xlsx, csv, "
+    "json, txt and md files come back as Markdown text (tables kept); images come with "
+    "the text the background recognition stored, if any; PDF is returned as a file. "
 )
 
 _DESC_GET_YADISK = _tool_description(
@@ -178,11 +187,22 @@ _DESC_GET_YADISK = _tool_description(
 )
 
 _DESC_SEND_MESSAGE = _tool_description(
-    "Send text and optional attachments to a chat. Success: send result dict. "
-    "Each item in `files` may be a public URL, a server-local path, OR a base64 "
-    "data URI (data:<mime>;base64,<payload>) — use the data URI form to send a "
-    "file the caller has in memory or attached locally, without needing a public "
-    "link (supported up to ~30 MB). "
+    "SEND NOW («отправь», «напиши ему»). One message: `message`. Several separate "
+    "messages («двумя/несколькими сообщениями»): `message` + `more_messages`, sent as "
+    "separate messages in that order. Saved Messages («в Избранное»): chat_id='me' "
+    "on THIS connector's account. chat_id is typed: 'me', 'user:<id>', 'chat:<id>', "
+    "'channel:<id>', '@username' or a t.me link; a bare number is refused (it can name "
+    "two different chats). Result: status sent | partial | failed, and per message "
+    "state, message_id, link (channels/supergroups only) and error_code (flood_wait with "
+    "retry_after, peer_not_found, permission_denied, timeout...). Retry with the SAME "
+    "operation_key: delivered messages are never sent twice. If sending to people is "
+    "switched off on this server, a person's chat gets status=draft (one message, left "
+    "in the input field) or status=scheduled with scheduled_as=parking (a series, in "
+    "order; the owner sends it), reason=instant_send_disabled — report that, do not "
+    "look for another way to send. Saved Messages and the owner's test chats are always "
+    "sent. Not this tool: «пока не отправляй / подготовь» = draft_save; «отложи на "
+    "15:00» = schedule_batch. `files` (first message only) may be a public URL or a "
+    "base64 data URI (data:<mime>;base64,<payload>, up to ~30 MB). "
 )
 
 _DESC_EDIT_MESSAGE = _tool_description(
@@ -239,7 +259,25 @@ _DESC_RECENT_ACTIVITY = _tool_description(
     "with direction and reply links, attachment metadata, voice transcripts that are "
     "already available, and last incoming / last outgoing. Voice without a ready "
     "transcript is marked pending, never omitted. Whether a message needs a reply is "
-    "not decided here. Success: dict with keys chats and coverage. "
+    "not decided here. Success: dict with keys chats and coverage. coverage says how many "
+    "chats were found, returned and excluded (and why: archived_folder, channels, "
+    "chat_type_filter, over_limit_chats) and partial=true with partial_reasons when the "
+    "list is cut; never present a partial list as complete. "
+)
+
+# Read by MCP clients at connect time: maps the owner's words to one tool each, so the
+# agent does not have to guess (audit 13.11.2026: send intents were improvised).
+SERVER_INSTRUCTIONS = (
+    "Telegram of ONE account per connector (personal or work). Intent → tool: "
+    "«отправь» = send_message (one call; «двумя сообщениями» = message + more_messages, "
+    "in order). «в Избранное» = send_message with chat_id='me'. «пока не "
+    "отправляй / подготовь / черновик» = draft_save. «отложи на 15:00 / запланируй» = "
+    "schedule_batch preview, then apply; at_msk is Moscow time unless you write an offset. "
+    "Move/cancel a scheduled message = scheduled_list, then scheduled_change. When sending "
+    "to people is switched off, send_message answers status=draft or status=scheduled "
+    "(parking) with reason=instant_send_disabled: tell the owner what was left, do not try "
+    "another tool. Retries: reuse operation_key. Overviews (recent_activity, find_chats) "
+    "report coverage; if coverage.partial is true say what is missing."
 )
 
 _DESC_GET_CHAT_INFO = _tool_description(
@@ -385,17 +423,6 @@ def mcp_tool_with_restrictions(
     return decorator
 
 
-def instant_send_enabled() -> bool:
-    """TELEGRAM_INSTANT_SEND=false removes every tool that puts text in front of a person
-    at once or changes what was already sent. The owner decided (10.11.2026) that agents
-    leave drafts and scheduled messages; he presses Send himself."""
-    return (os.environ.get("TELEGRAM_INSTANT_SEND") or "true").strip().lower() not in (
-        "0",
-        "false",
-        "no",
-    )
-
-
 def register_tools(mcp: FastMCP) -> None:
     instant_send = instant_send_enabled()
 
@@ -495,9 +522,10 @@ def register_tools(mcp: FastMCP) -> None:
     async def get_media_content(
         chat_id: ChatId,
         message_ids: MessageIds,
+        as_markdown: bool = False,
     ) -> list[Any]:
         """Return image bytes inline for given messages (full doc URL in tool description)."""
-        return await get_media_content_impl(chat_id, message_ids)
+        return await get_media_content_impl(chat_id, message_ids, as_markdown)
 
     @mcp.tool(
         description=_DESC_GET_YADISK,
@@ -519,25 +547,38 @@ def register_tools(mcp: FastMCP) -> None:
         """Open a public Yandex.Disk link and inline its images (full doc URL in tool description)."""
         return await get_yandex_disk_content_impl(public_url, path)
 
-    @_tool_if(
-        instant_send,
+    # Always visible: with instant send off it answers draft/scheduled for people
+    # and still sends to Saved Messages and test chats (owner, 14.11.2026).
+    @mcp.tool(
         description=_DESC_SEND_MESSAGE,
         annotations=ToolAnnotations(
-            title="Send message",
+            title="Send message now",
             destructiveHint=True,
             openWorldHint=True,
         ),
     )
     @mcp_tool_with_restrictions("send_message")
     async def send_message(
-        chat_id: ChatId,
+        chat_id: TypedChatRef,
         message: MessageBody,
+        more_messages: MoreMessages = None,
         reply_to_id: ReplyToId = None,
         parse_mode: ParseMode = "auto",
         files: FilesListParam = None,
+        operation_key: OperationKey = None,
+        fallback: SendFallback = "auto",
     ) -> dict[str, Any]:
-        """Send text or media to a chat (full doc URL in tool description)."""
-        return await send_message_impl(chat_id, message, reply_to_id, parse_mode, files)
+        """Send now, one message or an ordered series (full doc URL in tool description)."""
+        return await send_message_now(
+            chat_id,
+            message,
+            more_messages=more_messages,
+            reply_to_id=reply_to_id,
+            parse_mode=parse_mode,
+            files=files,
+            operation_key=operation_key,
+            fallback=fallback,
+        )
 
     @_tool_if(
         instant_send,
@@ -814,7 +855,10 @@ def register_tools(mcp: FastMCP) -> None:
         description=_tool_description(
             "Put a batch of messages into Telegram's scheduled queue — never sends now. "
             "preview: every row checked by the server and shown with account, chat title, "
-            "topic, full text, Moscow date and kind; nothing is written. apply: same rows plus "
+            "topic, full text, Moscow date and kind; nothing is written. «Отложи на 15:00» = "
+            "this tool. at_msk without an offset is MOSCOW time (UTC+3); if the owner names a "
+            "time in another zone, write the offset (e.g. 2026-11-14T15:00+05:00) — ask if the "
+            "zone is unclear, and read back at_msk from preview. apply: same rows plus "
             "an operation_key; returns at once, Telegram confirmations go to operation_status. "
             "A row without at_msk becomes parking (23:59 Moscow a year ahead, kept alive by the "
             "server, sent by the owner himself). Order of rows for one chat is kept. Rows "
@@ -868,7 +912,7 @@ def register_tools(mcp: FastMCP) -> None:
         @mcp_tool_with_restrictions("test_chats_create")
         async def test_chats_create(
             count: FixtureCount = 20,
-            prefix: FixturePrefix = "MCP-тест-",
+            prefix: FixturePrefix = FIXTURE_PREFIX,
             bot_username: FixtureBot = "salto_ops_admin_bot",
         ) -> dict[str, Any]:
             """Create test groups once."""

@@ -195,6 +195,8 @@ def test_instant_send_switch(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_send_tools_are_not_registered_when_switched_off(monkeypatch):
+    """send_message stays registered since 14.11.2026 and gates itself per recipient
+    (tests/unit/tools/test_send.py proves a person's chat never receives a send)."""
     from fastmcp import FastMCP
 
     from src.server_components import tools_register as tr
@@ -205,7 +207,6 @@ async def test_send_tools_are_not_registered_when_switched_off(monkeypatch):
     names = {t.name for t in await mcp.list_tools()}
     assert {"draft_get", "draft_save", "outbox_report"} <= names
     assert not names & {
-        "send_message",
         "send_rich_message",
         "send_message_to_phone",
         "edit_message",

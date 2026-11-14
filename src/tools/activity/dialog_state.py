@@ -22,7 +22,8 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # Telegram serves dialogs in pages; this bounds one discovery pass.
-DEFAULT_DIALOG_SCAN_LIMIT = 200
+# Both folders are walked in one pass, so the budget covers the archive too.
+DEFAULT_DIALOG_SCAN_LIMIT = 400
 
 
 @dataclass(slots=True)
@@ -99,6 +100,8 @@ class DialogScan:
     scanned: int = 0
     truncated: bool = False
     rpc_calls: int = 0
+    # Dialogs inside the window left out because they sit in the archive folder.
+    excluded_archived: int = 0
 
 
 def _chat_type(entity: Any) -> tuple[str, bool, bool]:
@@ -156,11 +159,16 @@ async def scan_dialogs(
     Pinned dialogs break strict chronological ordering, so an early break on the
     first old dialog would silently drop active chats. The pass therefore walks
     the requested window and filters by date afterwards.
+
+    The pass always lists every folder. Telethon's ``archived=True`` means ONLY the
+    archive folder, so passing ``include_archived`` through dropped the whole main
+    list (audit 13.11.2026: 2 chats instead of 47). Archived dialogs are left out
+    here unless asked for, and counted, so the answer can say what it left out.
     """
     scan = DialogScan()
     last_seen_date: str | None = None
     try:
-        async for dialog in client.iter_dialogs(limit=limit, archived=include_archived):
+        async for dialog in client.iter_dialogs(limit=limit):
             scan.scanned += 1
             state = _state_from_dialog(dialog)
             if state is None:
@@ -174,6 +182,9 @@ async def scan_dialogs(
                 and not state.unread_count
             ):
                 # Older than the window and nothing unread: not part of this answer.
+                continue
+            if state.archived and not include_archived:
+                scan.excluded_archived += 1
                 continue
             scan.dialogs.append(state)
         # "Truncated" must mean "the window was not covered", not "the cap was

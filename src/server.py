@@ -25,7 +25,7 @@ from src.server_components.health import register_health_routes
 from src.server_components.middleware_register import register_mcp_middleware
 from src.server_components.mtproto_api import register_mtproto_api_routes
 from src.server_components.server_card import register_server_card_route
-from src.server_components.tools_register import register_tools
+from src.server_components.tools_register import SERVER_INSTRUCTIONS, register_tools
 from src.server_components.web_setup import register_web_setup_routes
 from src.telemetry import telemetry_task
 
@@ -131,7 +131,9 @@ setup_logging()
 # Note: auth is handled by the @require_auth decorator on each tool,
 # not by FastMCP transport-level auth. This lets unauthenticated calls
 # reach the decorator which returns structured guidance instead of 401.
-mcp = FastMCP("Telegram MCP Server", lifespan=lifespan)
+mcp = FastMCP(
+    "Telegram MCP Server", instructions=SERVER_INSTRUCTIONS, lifespan=lifespan
+)
 
 # Register routes and tools immediately (no on_startup hook available)
 register_health_routes(mcp)

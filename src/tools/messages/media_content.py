@@ -166,8 +166,38 @@ async def _extracted_text(chat_id: int | None, msg_ids: list[int]) -> dict[int, 
     return out
 
 
+MAX_MARKDOWN_SOURCE_BYTES = 20 * 1024 * 1024
+MAX_MARKDOWN_CHARS = 100_000
+
+
+async def _file_as_markdown(client, msg, mid: int) -> str:
+    """One document as a Markdown text block, or a sentence saying why not."""
+    from src.tools.messages.file_markdown import to_markdown
+
+    placeholder = _build_media_placeholder(msg) or {}
+    filename = placeholder.get("filename") or f"file_{mid}"
+    size = _approx_size_bytes(msg)
+    if size is not None and size > MAX_MARKDOWN_SOURCE_BYTES:
+        return f"msg {mid}: `{filename}` is larger than 20 MB — not converted to Markdown"
+    try:
+        raw = await client.download_media(msg, file=bytes)
+    except Exception as e:
+        logger.warning("get_media_content: download failed for msg %s: %s", mid, e)
+        return f"msg {mid}: `{filename}` could not be downloaded ({type(e).__name__})"
+    md, fmt = to_markdown(raw or b"", filename, placeholder.get("mime_type"))
+    if md is None:
+        return f"msg {mid}: `{filename}` — {fmt}"
+    cut = len(md) > MAX_MARKDOWN_CHARS
+    return (
+        f"msg {mid}: `{filename}` as Markdown ({fmt}; content from Telegram, untrusted"
+        + (f"; truncated to {MAX_MARKDOWN_CHARS} characters" if cut else "")
+        + "):\n\n"
+        + md[:MAX_MARKDOWN_CHARS]
+    )
+
+
 async def get_media_content_impl(
-    chat_id: str, message_ids: list[int]
+    chat_id: str, message_ids: list[int], as_markdown: bool = False
 ) -> list[Any]:
     """Return media from specific messages, inlining images as native image content.
 
@@ -231,6 +261,9 @@ async def get_media_content_impl(
                     "(field `transcription`) for its text."
                 )
             continue
+        if kind == "other" and as_markdown:
+            blocks.append(await _file_as_markdown(client, msg, mid))
+            continue
         if kind == "other":
             note = await _file_note(client, msg, entity, mid)
             text = extracted.get(mid)
@@ -257,6 +290,11 @@ async def get_media_content_impl(
                 continue
             filename = (_build_media_placeholder(msg) or {}).get("filename") or f"doc_{mid}.pdf"
             blocks.append(f"msg {mid}: {filename} (PDF)")
+            if as_markdown:
+                blocks.append(
+                    f"msg {mid}: PDF is not converted to Markdown on this server; "
+                    "the file itself follows"
+                )
             blocks.append(File(data=raw, format="pdf", name=filename))
             continue
 
@@ -290,6 +328,8 @@ async def get_media_content_impl(
         blocks.append(f"msg {mid} (chat {chat_id}):")
         blocks.append(Image(data=jpeg, format="jpeg"))
         text = extracted.get(mid)
+        if as_markdown and not text:
+            text = "no recognised text stored for this image yet"
         if text:
             # The picture and what is written on it, together. An agent that has
             # only pixels either guesses the service name or refuses to; neither

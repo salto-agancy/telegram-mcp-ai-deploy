@@ -175,7 +175,11 @@ IncludeChannels = Annotated[
 IncludeArchivedDialogs = Annotated[
     bool,
     Field(
-        description="If true, also scan dialogs the owner moved to the archive folder."
+        description=(
+            "If true, ALSO include dialogs the owner moved to the archive folder (in "
+            "addition to the main list). Left out by default and counted in "
+            "coverage.excluded.archived_folder."
+        )
     ),
 ]
 
@@ -524,4 +528,23 @@ BatchItems = Annotated[
 ]
 OperationId = Annotated[
     str, Field(description="operation_key returned by schedule_batch apply.")
+]
+
+MoreMessages = Annotated[
+    list[str] | None,
+    Field(
+        description=(
+            "Further messages of the series, sent after `message` as SEPARATE messages in "
+            "this order («двумя сообщениями»: message=first, more_messages=[second])."
+        )
+    ),
+]
+SendFallback = Annotated[
+    Literal["auto", "draft", "parking"],
+    Field(
+        description=(
+            "Only when sending to people is switched off: what to leave instead. auto = a "
+            "draft for one message, parking (ordered scheduled messages) for a series."
+        )
+    ),
 ]

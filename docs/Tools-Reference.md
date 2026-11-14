@@ -467,13 +467,31 @@ get_yandex_disk_content(public_url: str, path?: str) -> ContentBlock[]
 
 ```typescript
 send_message(
-  chat_id: str,                  // Target chat ID (see Supported Chat ID Formats above)
+  chat_id: str,                  // TYPED: 'me', 'user:<id>', 'chat:<id>', 'channel:<id>', '@username', t.me link; bare numbers refused
   message: str,                  // Message content (becomes caption when files sent)
-  reply_to_id?: number,          // Reply target (message ID, forum topic root, or channel post for comments)
+  more_messages?: string[],      // Further messages of a series, sent as separate messages in this order
+  reply_to_id?: number,          // Reply target for the first message (message ID, forum topic root, or channel post for comments)
   parse_mode?: 'markdown'|'html'|'auto' = 'auto', // Text formatting (auto-detect by default)
-  files?: string[]               // File paths, URLs, or data: URIs (base64). Use a one-element array for a single file
+  files?: string[],              // First message only. File paths, URLs, or data: URIs (base64)
+  operation_key?: str,           // Same key on retry: delivered messages are never sent twice (derived from content for 10 min if omitted)
+  fallback?: 'auto'|'draft'|'parking' = 'auto' // Only when instant send is off: what a person's chat gets instead
 )
 ```
+
+**Result:** `status` = `sent` | `partial` | `failed` (or `draft` / `scheduled` / `not_sent`
+when instant send is off), `messages[]` with per-message `state` (`sent`, `failed`,
+`unknown`, `not_attempted`), `message_id`, `link` (channels/supergroups only),
+`error_code` (`flood_wait` + `retry_after`, `peer_not_found`, `permission_denied`,
+`timeout`, `message_too_long`, `telegram_error`), `operation_key`, `allowed_as`.
+Each message's Telegram `random_id` is derived from the operation key, so a retry
+after a timeout cannot create a duplicate.
+
+**`TELEGRAM_INSTANT_SEND=false`:** the tool stays registered. Saved Messages (`me`)
+and the owner's own fixture groups (basic group created by this account, title prefix
+`MCP-тест-`, at most 2 members, `ENABLE_TEST_FIXTURES=true`) are sent. Any other chat
+gets `status=draft` (one message, via `draft_save`, owner text never replaced) or
+`status=scheduled`, `scheduled_as=parking` (a series, via `schedule_batch`, in order),
+always with `reason=instant_send_disabled`. Files to a person are `not_sent`.
 
 **reply_to_id automatically handles:**
 - 📢 **Channel post comments** - Detects discussion group and posts comment there

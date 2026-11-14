@@ -15,6 +15,9 @@ from telethon.tl import functions, types
 
 from src.client.connection import get_connected_client
 
+# Title prefix of the groups test_chats_create makes; send_message recognises them by it.
+FIXTURE_PREFIX = "MCP-тест-"
+
 
 def fixtures_enabled() -> bool:
     return (os.environ.get("ENABLE_TEST_FIXTURES") or "").lower() in (

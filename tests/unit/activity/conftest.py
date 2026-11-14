@@ -80,6 +80,7 @@ class FakeDialog:
         chat_type: str = "private",
         title: str = "chat",
         top_message: int | None = None,
+        archived: bool = False,
     ):
         self.id = chat_id
         self.date = NOW - timedelta(minutes=minutes_ago)
@@ -88,7 +89,7 @@ class FakeDialog:
         self.title = title
         self.name = title
         self.pinned = False
-        self.archived = False
+        self.archived = archived
         if chat_type == "private":
             self.entity = SimpleNamespace(id=chat_id, first_name="A", username=None)
         elif chat_type == "bot":
@@ -121,9 +122,13 @@ class FakeClient:
     async def get_me(self):
         return self._me
 
-    def iter_dialogs(self, limit=None, archived=False):
+    def iter_dialogs(self, limit=None, archived=None):
+        """Telethon's contract: archived=None lists every folder, False only the main
+        list, True ONLY the archive folder."""
         self.dialog_passes += 1
-        dialogs = self._dialogs
+        dialogs = [
+            d for d in self._dialogs if archived is None or d.archived == archived
+        ]
 
         async def gen():
             for d in dialogs[: limit or len(dialogs)]:

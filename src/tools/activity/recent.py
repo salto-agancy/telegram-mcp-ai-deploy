@@ -188,10 +188,17 @@ async def recent_activity_impl(
         allowed.add("channel")
 
     candidates: list[DialogState] = []
+    excluded: dict[str, int] = {}
+    if scan.excluded_archived:
+        excluded["archived_folder"] = scan.excluded_archived
     for state in scan.dialogs:
+        reason = None
         if state.chat_type not in allowed:
-            continue
-        if unread_only and not (state.unread_count or state.unread_mark):
+            reason = "channels" if state.chat_type == "channel" and not type_filter else "chat_type_filter"
+        elif unread_only and not (state.unread_count or state.unread_mark):
+            reason = "not_unread"
+        if reason:
+            excluded[reason] = excluded.get(reason, 0) + 1
             continue
         candidates.append(state)
 
@@ -200,6 +207,8 @@ async def recent_activity_impl(
     )
     by_id_all = {s.chat_id: s for s in candidates}
     truncated = len(candidates) > limit_chats
+    if truncated:
+        excluded["over_limit_chats"] = len(candidates) - limit_chats
     candidates = candidates[:limit_chats]
     run.chats_inspected = len(candidates)
     by_id = {s.chat_id: s for s in candidates}
@@ -362,6 +371,15 @@ async def recent_activity_impl(
         # Say it out loud: these chats were not read in time, so their part of
         # the window is unknown rather than empty.
         result["coverage"]["chats_unread_in_time"] = len(run.live_topup_unfinished)
+    result["coverage"].update(
+        _completeness(
+            scan=scan,
+            excluded=excluded,
+            payload_chats=payload_chats,
+            limit_chats=limit_chats,
+            unfinished=len(run.live_topup_unfinished),
+        )
+    )
     if archive_error:
         result["coverage"]["archive_error"] = archive_error
     if requested_accounts:
@@ -377,6 +395,55 @@ async def recent_activity_impl(
     if include_telemetry:
         result["telemetry"] = run.to_dict()
     return result
+
+
+_HOW_TO_INCLUDE = {
+    "archived_folder": "pass include_archived_dialogs=true",
+    "channels": "pass include_channels=true",
+    "chat_type_filter": "widen or drop chat_type",
+    "not_unread": "pass unread_only=false",
+    "over_limit_chats": "raise limit_chats (max 200) or narrow the window",
+}
+
+
+def _completeness(
+    *,
+    scan: Any,
+    excluded: dict[str, int],
+    payload_chats: list[dict[str, Any]],
+    limit_chats: int,
+    unfinished: int,
+) -> dict[str, Any]:
+    """Found / returned / excluded-and-why, and whether the list is complete.
+
+    Audit 13.11.2026: an answer of 2 chats for a week of 47 said nothing about
+    what it left out, so it read as complete. Exclusions chosen by the caller's
+    own filters are listed; losses the caller did not choose make it partial.
+    """
+    reasons: list[str] = []
+    if excluded.get("over_limit_chats"):
+        reasons.append(
+            f"limit_chats={limit_chats} cut {excluded['over_limit_chats']} more chats "
+            "active in the window"
+        )
+    if scan.truncated:
+        reasons.append(
+            f"the dialog scan stopped after {scan.scanned} dialogs before reaching "
+            "the start of the window"
+        )
+    if unfinished:
+        reasons.append(f"{unfinished} chats were not read in time: unknown, not empty")
+    failed = sum(1 for c in payload_chats if c.get("partial"))
+    if failed:
+        reasons.append(f"{failed} chats failed to read live: see chats[].partial")
+    return {
+        "chats_found": len(scan.dialogs) + scan.excluded_archived,
+        "chats_with_messages": sum(1 for c in payload_chats if c.get("messages")),
+        "excluded": excluded,
+        "how_to_include": {k: _HOW_TO_INCLUDE[k] for k in excluded},
+        "partial": bool(reasons),
+        "partial_reasons": reasons,
+    }
 
 
 def _message_payload(msg: ArchiveMessage, state: DialogState) -> dict[str, Any]:

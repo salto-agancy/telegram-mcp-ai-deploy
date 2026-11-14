@@ -82,9 +82,11 @@ class _FakeClient:
         self._dialogs = dialogs
         self.calls = 0
 
-    def iter_dialogs(self, limit=None, archived=False):
+    def iter_dialogs(self, limit=None, archived=None):
         self.calls += 1
-        dialogs = self._dialogs
+        dialogs = [
+            d for d in self._dialogs if archived is None or d.archived == archived
+        ]
 
         async def gen():
             for d in dialogs[: limit or len(dialogs)]:

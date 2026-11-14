@@ -53,6 +53,26 @@ CREATE TABLE IF NOT EXISTS outbox (
 CREATE UNIQUE INDEX IF NOT EXISTS outbox_op ON outbox(account, operation_key, seq)
     WHERE operation_key IS NOT NULL;
 CREATE INDEX IF NOT EXISTS outbox_peer ON outbox(account, peer_id, topic_id);
+-- Messages sent now (send_message): one row per message of a series, keyed like
+-- the outbox so a retry finds what was already delivered. Additive: no migration.
+CREATE TABLE IF NOT EXISTS sends (
+    id            INTEGER PRIMARY KEY,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL,
+    account       TEXT NOT NULL,
+    agent         TEXT NOT NULL,
+    operation_key TEXT NOT NULL,
+    seq           INTEGER NOT NULL,
+    peer          TEXT NOT NULL,
+    peer_id       INTEGER,
+    text_version  TEXT NOT NULL,
+    status        TEXT NOT NULL CHECK (status IN ('sending', 'sent', 'failed')),
+    tg_msg_id     INTEGER,
+    link          TEXT,
+    error_code    TEXT,
+    error         TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS sends_op ON sends(account, operation_key, seq);
 CREATE TABLE IF NOT EXISTS outbox_events (
     id        INTEGER PRIMARY KEY,
     outbox_id INTEGER NOT NULL REFERENCES outbox(id),

@@ -20,9 +20,34 @@ All notable changes follow [Keep a Changelog](https://keepachangelog.com/en/1.1.
   `mismatch` when the stored text differs from the one requested. The caption's wording
   is never composed here.
 
+- `send_message`: `more_messages` (an ordered series of separate messages),
+  `operation_key` (idempotent retries; random_id derived from it), per-message state,
+  message ids, t.me links and concrete error codes (`flood_wait` with `retry_after`,
+  `peer_not_found`, `permission_denied`, `timeout`).
+- `get_media_content(as_markdown=true)`: docx, xlsx, csv, json, txt and md
+  attachments as Markdown text (standard library only).
+- Server instructions mapping the owner's words to tools (send now / draft / schedule
+  / Saved Messages).
+
 ### Changed
 
+- `send_message` is registered even with `TELEGRAM_INSTANT_SEND=false`: it sends to
+  Saved Messages and own test chats, and leaves a draft (one message) or parking (a
+  series) in a person's chat with `reason=instant_send_disabled`. Migration: `chat_id`
+  must now be a typed reference (`user:<id>`, `chat:<id>`, `channel:<id>`, `me`,
+  `@username`, t.me link); a bare number is refused because it can name two chats.
+- `recent_activity` coverage adds `chats_found`, `chats_with_messages`, `excluded`
+  (archived_folder, channels, chat_type_filter, not_unread, over_limit_chats),
+  `how_to_include`, `partial` and `partial_reasons`. The dialog pass walks both
+  folders (default budget 400 dialogs).
+- `find_chats` with dates returns `coverage` (`returned`, `limit`, `more_available`,
+  `partial`).
+
 ### Fixed
+
+- `recent_activity(include_archived_dialogs=true)` returned ONLY the archive folder
+  (Telethon `archived=True`), silently dropping the main list: 2 chats instead of 47
+  in a 7-day audit. It now adds the archive to the main list.
 
 ## [0.35.0] - 2026-09-17
 

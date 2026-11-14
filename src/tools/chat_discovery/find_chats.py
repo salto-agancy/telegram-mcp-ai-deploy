@@ -439,14 +439,29 @@ async def _find_chats_by_dialogs(
             exception=ValueError(f"Invalid max_date format: '{max_date}'"),
         )
 
+    # One extra row tells "exactly limit" from "cut at limit" (audit 13.11.2026:
+    # a cut list read as complete).
     results = []
     async for item in search_dialogs_impl(
-        query, limit, chat_type, public, min_date_dt, max_date_dt, folder_id
+        query, limit + 1, chat_type, public, min_date_dt, max_date_dt, folder_id
     ):
         results.append(item)
+    more_available = len(results) > limit
+    results = results[:limit]
 
     if results:
-        return {"chats": results}
+        return {
+            "chats": results,
+            "coverage": {
+                "returned": len(results),
+                "limit": limit,
+                "more_available": more_available,
+                "partial": more_available,
+                "folders": "all (main list and archive)"
+                if folder_id is None
+                else f"folder {folder_id}",
+            },
+        }
 
     date_desc = []
     if min_date:
