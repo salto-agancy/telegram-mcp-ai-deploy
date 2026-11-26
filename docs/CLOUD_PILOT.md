@@ -39,3 +39,57 @@
 Проект `telegram-mcp-cloud` использует три постоянных тома и отдельные файлы секретов. У каждого backend отдельные сети для доступа фасада и выхода в Telegram. Опубликован только частный порт фасада. Фасад принимает `CF-Connecting-IP` для ограничений частоты только от заданного `CLOUD_TRUSTED_PROXY_IP`.
 
 После успешных проверок на том же коммите отдельный процесс CI продвигает ветку `release-cloud`. `scripts/cloud_auto_update.sh` собирает образ с тегом коммита, последовательно проверяет оба backend и фасад. При ошибке возвращает предыдущий образ по сохранённому хешу. Контейнеры пересоздаются с прежними томами. Обновление по таймеру использует свою блокировку и отдельный файл конфигурации.
+
+## Этап 5. План развёртывания и отката
+
+Владелец подтверждает коммит и окно работ по действующему процессу, прежде чем запускать команды на VPS. Сначала сверить ресурсы и свободный адрес origin. Команды предварительной проверки читают состояние:
+
+```bash
+uptime
+free -h
+df -h /opt /var/lib/docker
+docker system df
+docker compose ls
+sudo ss -ltnp
+ip -br address
+```
+
+1. Убедиться, что `release-cloud` указывает на согласованный коммит и проверка `Cloud pilot release` зелёная. Выбрать отдельное имя узла в существующем домене и новый частный origin-порт. Проверить, что такого имени и правила ещё нет в существующем Cloudflare Tunnel. Убедиться, что каждый действующий экземпляр коннектора этого туннеля видит новый origin. Сохранить перечень действующих правил и контрольные ответы рабочего и личного MCP.
+2. На VPS выделить каталоги `/opt/telegram-mcp-cloud`, `/etc/telegram-mcp-cloud` и `/var/lib/telegram-mcp-cloud`. В отдельный каталог клонировать ветку `release-cloud`, проверить её хеш через `git rev-parse HEAD`. Подготовить `/etc/telegram-mcp-cloud/pilot.env` с переменными из `docker-compose.cloud.yml`. `CLOUD_BIND_IP` указывает частный адрес, доступный коннектору. `CLOUD_TRUSTED_PROXY_IP` указывает один подтверждённый адрес TCP-источника, который видит фасад после NAT Docker. Для коннектора на хосте сначала проверить loopback. Для контейнерного коннектора проверить достижимость по уже доступному ему адресу. Допускать к origin только коннектор, с учётом фильтрации опубликованных Docker-портов. Если адрес источника общий с другими процессами или сеть недоступна, остановиться до публикации маршрута.
+3. В каталоге `CLOUD_SECRET_DIR` подготовить файлы `first-bearer`, `second-bearer`, `api-hash` и `routes.json`. Сгенерировать два разных внутренних ключа и два случайных приглашения (по 32 байта). В `routes.json` записать хеши приглашений, согласованный срок `expires`, `telegram: true`, ключи и внутренние адреса `http://cloud-first:8000/v1/mcp` и `http://cloud-second:8000/v1/mcp`. Файлы секретов доступны только назначенному UID/GID образа и администратору. В `/etc/telegram-mcp-cloud/update.env` задать `CLOUD_APP_DIR=/opt/telegram-mcp-cloud`, `CLOUD_ENV_FILE=/etc/telegram-mcp-cloud/pilot.env` и `CLOUD_STATE_DIR=/var/lib/telegram-mcp-cloud`. Сверить точный адрес возврата Perplexity с `CLOUD_REDIRECT_URIS`.
+4. Запустить только проект пилота и проверить три статуса. Запуск производится по согласованному хешу ветки релиза:
+
+   ```bash
+   cd /opt/telegram-mcp-cloud
+   sudo env CLOUD_DEPLOY_CONFIG=/etc/telegram-mcp-cloud/update.env ./scripts/cloud_auto_update.sh
+   sudo env CLOUD_IMAGE_TAG="$(git rev-parse HEAD)" docker compose -p telegram-mcp-cloud \
+     --env-file /etc/telegram-mcp-cloud/pilot.env -f docker-compose.cloud.yml ps
+   ```
+
+5. Добавить отдельное правило имени узла в существующий туннель. Направить все пути этого имени на частный origin фасада. Проверить `/.well-known/oauth-protected-resource/mcp` и `/.well-known/oauth-authorization-server` с ответом 200, `POST /mcp` без токена с ответом 401, а также обычный OAuth-запрос через туннель. Проверить, что IP-разделение работает через туннель, а прямой заход с поддельным `CF-Connecting-IP` отклоняется. Сверить прежние контрольные ответы рабочего и личного MCP. Затем по согласованию поставить отдельные systemd-файлы пилота, выполнить `systemctl daemon-reload` и включить `telegram-mcp-cloud-update.timer`.
+
+Проверки после добавления маршрута. Задай `PILOT_URL` с адресом пилота без завершающего слеша:
+
+```bash
+curl --fail --silent --output /dev/null --write-out '%{http_code}\n' \
+  "$PILOT_URL/.well-known/oauth-authorization-server"
+curl --fail --silent --output /dev/null --write-out '%{http_code}\n' \
+  "$PILOT_URL/.well-known/oauth-protected-resource/mcp"
+curl --silent --output /dev/null --write-out '%{http_code}\n' -X POST "$PILOT_URL/mcp"
+```
+
+Из среды каждого коннектора выполни `curl --fail --silent --output /dev/null "$PILOT_ORIGIN/.well-known/oauth-authorization-server"`, где `PILOT_ORIGIN` — частный HTTP-адрес с портом. Если в образе коннектора отсутствует `curl`, используй проверку доступности origin в панели туннеля. Сохрани только коды ответов.
+
+### Откат
+
+Сначала отключить `telegram-mcp-cloud-update.timer` и убедиться, что обновление завершилось. При первом развёртывании убрать правило хоста пилота в туннеле, затем выполнить `docker compose -p telegram-mcp-cloud --env-file /etc/telegram-mcp-cloud/pilot.env -f docker-compose.cloud.yml stop` с `CLOUD_IMAGE_TAG` текущего коммита. При откате обновления взять последний исправный хеш и его сохранённый образ, переключить отдельный checkout на этот хеш и поднять по очереди `cloud-first`, `cloud-second`, `cloud-oauth` командой `up -d --no-deps --no-build --wait --wait-timeout 100 SERVICE` с тем же Compose-файлом и `CLOUD_IMAGE_TAG` исправного коммита. Записать исправный хеш в `/var/lib/telegram-mcp-cloud/deployed` после проверки состояния. Сохранить тома и секреты. Автообновление возобновить после появления исправленного релиза. Повторить контрольные запросы к пилоту и обоим действующим MCP.
+
+## Инструкция для iPhone
+
+1. Открой настройки подключений MCP в Perplexity и добавь общий URL пилота с путём `/mcp`.
+2. В окне OAuth введи своё приглашение и номер Telegram.
+3. Открой Telegram на том же iPhone, возьми код и вернись в окно OAuth. Если форма запросит пароль двухэтапной проверки, введи его.
+4. Выбери свой тестовый чат с вымышленными сообщениями и нажми «Разрешить чтение». Дождись возврата в Perplexity.
+5. После закрытия окна попроси Perplexity найти контрольную фразу в выбранном чате.
+6. Повтори запрос после перезапуска или согласованного обновления пилота. Владелец отдельно проверяет с учётной записи второго участника отказ для известного ID первого чата.
+7. Для отключения открой `/setup` на адресе пилота в том же браузере, где выдан доступ, и нажми «Отключить».
