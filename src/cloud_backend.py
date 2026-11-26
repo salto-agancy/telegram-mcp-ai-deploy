@@ -7,6 +7,7 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field
+from starlette.responses import Response
 from starlette.routing import Route
 from telethon.errors import RPCError
 
@@ -52,6 +53,10 @@ def fixture_backend(allowed_chat: int | None, telegram=None):
         }
 
     app = server.http_app(path="/v1/mcp", stateless_http=True, json_response=True)
+    async def health(request):
+        return Response(status_code=200)
+
+    app.router.routes.append(Route("/health", health))
     if telegram is not None:
         app.router.routes.append(Route("/setup", telegram.setup, methods=["POST"]))
     return app

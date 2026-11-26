@@ -1,0 +1,10 @@
+[Unit]
+Description=Update the isolated Telegram MCP cloud pilot
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=CLOUD_DEPLOY_CONFIG=/etc/telegram-mcp-cloud/update.env
+ExecStart=/opt/telegram-mcp-cloud/scripts/cloud_auto_update.sh
+TimeoutStartSec=1800

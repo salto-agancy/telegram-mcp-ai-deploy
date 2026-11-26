@@ -1,0 +1,111 @@
+name: telegram-mcp-cloud
+
+x-common: &common
+  image: telegram-mcp-cloud:${CLOUD_IMAGE_TAG:?set pilot image tag}
+  init: true
+  restart: unless-stopped
+  read_only: true
+  tmpfs: [/tmp:rw,noexec,nosuid,size=64m]
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  logging:
+    driver: json-file
+    options: {max-size: 5m, max-file: "2"}
+
+x-backend: &backend
+  <<: *common
+  command: [python, -m, src.cloud_backend]
+  healthcheck:
+    test:
+      - CMD
+      - python
+      - -c
+      - >-
+        import urllib.request; from pathlib import Path;
+        r=urllib.request.Request('http://127.0.0.1:8000/health',
+        headers={'Authorization':'Bearer '+Path('/run/secrets/backend_bearer').read_text().strip()});
+        assert urllib.request.urlopen(r, timeout=3).status == 200
+    interval: 10s
+    timeout: 5s
+    retries: 5
+
+x-backend-env: &backend-env
+  BIND_HOST: 0.0.0.0
+  BIND_PORT: "8000"
+  CLOUD_SESSION_PATH: /data/sessions/account.json
+  CLOUD_BACKEND_BEARER_FILE: /run/secrets/backend_bearer
+  TELEGRAM_API_ID: ${TELEGRAM_API_ID:?set pilot Telegram API ID}
+  TELEGRAM_API_HASH_FILE: /run/secrets/telegram_api_hash
+  DO_NOT_TRACK: "1"
+
+services:
+  cloud-oauth:
+    <<: *common
+    build:
+      context: .
+      args:
+        APP_UID: ${CLOUD_UID:-10001}
+        APP_GID: ${CLOUD_GID:-10001}
+    command: [python, -m, src.cloud_oauth]
+    environment:
+      BIND_HOST: 0.0.0.0
+      BIND_PORT: "8001"
+      PUBLIC_BASE_URL: ${CLOUD_PUBLIC_BASE_URL:?set pilot HTTPS origin}
+      MCP_OAUTH_REDIRECT_URIS: ${CLOUD_REDIRECT_URIS:?set callback allowlist}
+      OAUTH_DB_PATH: /data/oauth/oauth.db
+      CLOUD_ROUTES_FILE: /run/secrets/cloud_routes
+      CLOUD_TRUSTED_PROXY_IP: ${CLOUD_TRUSTED_PROXY_IP:?set the tunnel origin peer IP}
+      DO_NOT_TRACK: "1"
+    ports:
+      - "${CLOUD_BIND_IP:-127.0.0.1}:${CLOUD_BIND_PORT:?set a free pilot origin port}:8001"
+    networks: [origin, first-private, second-private]
+    volumes: [oauth-data:/data/oauth]
+    secrets:
+      - cloud_routes
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; assert urllib.request.urlopen('http://127.0.0.1:8001/.well-known/oauth-authorization-server', timeout=3).status == 200"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  cloud-first:
+    <<: *backend
+    environment: *backend-env
+    networks: [first-private, first-egress]
+    volumes: [first-session:/data/sessions]
+    secrets:
+      - source: first_bearer
+        target: backend_bearer
+      - telegram_api_hash
+  cloud-second:
+    <<: *backend
+    environment: *backend-env
+    networks: [second-private, second-egress]
+    volumes: [second-session:/data/sessions]
+    secrets:
+      - source: second_bearer
+        target: backend_bearer
+      - telegram_api_hash
+
+secrets:
+  cloud_routes:
+    file: ${CLOUD_SECRET_DIR:?set pilot secret directory}/routes.json
+  first_bearer:
+    file: ${CLOUD_SECRET_DIR}/first-bearer
+  second_bearer:
+    file: ${CLOUD_SECRET_DIR}/second-bearer
+  telegram_api_hash:
+    file: ${CLOUD_SECRET_DIR}/api-hash
+
+volumes:
+  oauth-data:
+  first-session:
+  second-session:
+
+networks:
+  origin:
+  first-private:
+    internal: true
+  second-private:
+    internal: true
+  first-egress:
+  second-egress:

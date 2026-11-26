@@ -1,0 +1,10 @@
+[Unit]
+Description=Check for verified Telegram MCP cloud pilot releases
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=10min
+RandomizedDelaySec=30s
+
+[Install]
+WantedBy=timers.target
