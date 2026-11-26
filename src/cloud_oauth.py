@@ -29,6 +29,13 @@ from src.cloud_http import serve
 from src.cloud_limits import PilotLimits
 from src.oauth_proxy import _secret
 
+PERPLEXITY_CLIENT_ID = "https://www.perplexity.ai/.well-known/mcp-client.json"
+# Pin only the two production callbacks approved for the pilot.
+PERPLEXITY_CALLBACKS = {
+    "https://www.perplexity.ai/rest/connections/oauth_callback",
+    "https://enterprise.perplexity.ai/rest/connections/oauth_callback",
+}
+
 NO_STORE = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS clients (id TEXT PRIMARY KEY, secret TEXT, redirects TEXT);
@@ -104,14 +111,19 @@ def build_cloud_app(issuer, callbacks, routes, db_path):
     with database() as db:
         db.executescript(SCHEMA)
 
+    perplexity_callbacks = PERPLEXITY_CALLBACKS.intersection(callbacks)
     flows = {}
     locks = {user: asyncio.Lock() for user in routes}
 
     metadata = build_metadata(AnyHttpUrl(issuer), None,
                               ClientRegistrationOptions(enabled=True, valid_scopes=["mcp"]),
                               RevocationOptions(enabled=True)).model_dump(mode="json", exclude_none=True)
-    metadata.update(token_endpoint_auth_methods_supported=["client_secret_post"],
-                    revocation_endpoint_auth_methods_supported=["client_secret_post"])
+    auth_methods = ["client_secret_post"]
+    if perplexity_callbacks:
+        auth_methods.append("none")
+        metadata["client_id_metadata_document_supported"] = True
+    metadata.update(token_endpoint_auth_methods_supported=auth_methods,
+                    revocation_endpoint_auth_methods_supported=auth_methods)
 
     async def discovery(request):
         return JSONResponse(metadata)
@@ -163,8 +175,12 @@ def build_cloud_app(issuer, callbacks, routes, db_path):
             or params.get("resource", resource) != resource or params.get("scope", "mcp") != "mcp"):
             raise OAuthError()
         with database(write=request.method == "POST") as db:
-            row = db.execute("SELECT redirects FROM clients WHERE id=?", (client,)).fetchone()
-            if not row or redirect not in callbacks or redirect not in json.loads(row["redirects"]):
+            if client == PERPLEXITY_CLIENT_ID:
+                valid_redirect = redirect in perplexity_callbacks
+            else:
+                row = db.execute("SELECT redirects FROM clients WHERE id=?", (client,)).fetchone()
+                valid_redirect = row and redirect in callbacks and redirect in json.loads(row["redirects"])
+            if not valid_redirect:
                 raise OAuthError()
             if request.method == "GET":
                 hidden = "".join(f'<input type="hidden" name="{k}" value="{escape(v)}">' for k, v in params.items())
@@ -291,6 +307,8 @@ def build_cloud_app(issuer, callbacks, routes, db_path):
 
     def client_auth(db, data):
         client = data.get("client_id")
+        if client == PERPLEXITY_CLIENT_ID and perplexity_callbacks and not data.get("client_secret"):
+            return client
         row = db.execute("SELECT secret FROM clients WHERE id=?", (client,)).fetchone()
         if not row or not hmac.compare_digest(row["secret"], digest(data.get("client_secret", ""))):
             raise OAuthError("invalid_client", 401)
@@ -315,6 +333,7 @@ def build_cloud_app(issuer, callbacks, routes, db_path):
                                    (digest(data.get("code", "")), client, resource, time.time())).fetchone()
                 verifier = data.get("code_verifier", "")
                 if (not grant or data.get("redirect_uri") != grant["redirect"]
+                        or (client == PERPLEXITY_CLIENT_ID and grant["redirect"] not in perplexity_callbacks)
                         or not re.fullmatch(r"[A-Za-z0-9._~-]{43,128}", verifier)):
                     raise OAuthError("invalid_grant")
                 challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")

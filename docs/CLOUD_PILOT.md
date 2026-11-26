@@ -93,3 +93,7 @@ curl --silent --output /dev/null --write-out '%{http_code}\n' -X POST "$PILOT_UR
 5. После закрытия окна попроси Perplexity найти контрольную фразу в выбранном чате.
 6. Повтори запрос после перезапуска или согласованного обновления пилота. Владелец отдельно проверяет с учётной записи второго участника отказ для известного ID первого чата.
 7. Для отключения открой `/setup` на адресе пилота в том же браузере, где выдан доступ, и нажми «Отключить».
+
+### Адреса возврата Perplexity
+
+В `pilot.env` задай `CLOUD_REDIRECT_URIS=https://www.perplexity.ai/rest/connections/oauth_callback,https://enterprise.perplexity.ai/rest/connections/oauth_callback`. Оба адреса закреплены для публичного клиента `https://www.perplexity.ai/.well-known/mcp-client.json`. Фасад сверяет их с настройкой, требует PKCE S256 и использует сохранённые значения без исходящих запросов при авторизации. При DCR по-прежнему выдаётся секрет.

@@ -163,9 +163,10 @@ def auth_request(client_id, verifier):
     }
 
 
-def approval(http, credentials, invite):
+def approval(http, credentials, invite, callback=CALLBACK):
     verifier = secret()
     params = auth_request(credentials["client_id"], verifier)
+    params["redirect_uri"] = callback
     page = http.get("/authorize", params=params)
     assert page.status_code == 200
     form = Fields(page.text).fields
@@ -175,7 +176,7 @@ def approval(http, credentials, invite):
     )
     assert result.status_code == 303
     uri = urlsplit(result.headers["location"])
-    assert uri._replace(query="").geturl() == CALLBACK
+    assert uri._replace(query="").geturl() == callback
     returned = parse_qs(uri.query)
     assert set(returned) == {"code", "state"}
     assert returned["state"] == [params["state"]]
@@ -184,7 +185,7 @@ def approval(http, credentials, invite):
         "code": returned["code"][0],
         "code_verifier": verifier,
         "grant_type": "authorization_code",
-        "redirect_uri": CALLBACK,
+        "redirect_uri": callback,
         "resource": ISSUER + "/mcp",
     }
     return token_form, [
@@ -455,11 +456,23 @@ def test_invite_reuse_and_rate_limit(facade):
         assert rpc(http, old["access_token"], "tools/list", {}).status_code == 401
         new = http.post("/token", data=exchange).json()
         assert not tool(http, new["access_token"])["isError"]
-        assert http.post("/token", data={**client, "grant_type": "refresh_token",
-                                          "refresh_token": old["refresh_token"]}).status_code == 400
+        assert (
+            http.post(
+                "/token",
+                data={
+                    **client,
+                    "grant_type": "refresh_token",
+                    "refresh_token": old["refresh_token"],
+                },
+            ).status_code
+            == 400
+        )
         for _ in range(13):
             register(http)
-        assert http.post("/register", json={"redirect_uris": [CALLBACK]}).status_code == 429
+        assert (
+            http.post("/register", json={"redirect_uris": [CALLBACK]}).status_code
+            == 429
+        )
 
 
 def test_telegram_backend_contract(tmp_path, monkeypatch):
@@ -501,29 +514,123 @@ def test_telegram_backend_contract(tmp_path, monkeypatch):
 
         async def get_messages(self, selected, **args):
             calls.append((selected, args))
-            return [SimpleNamespace(id=3, message="Beacon"), SimpleNamespace(id=2, message="Signal")]
+            return [
+                SimpleNamespace(id=3, message="Beacon"),
+                SimpleNamespace(id=2, message="Signal"),
+            ]
 
     state = tmp_path / "session.json"
     telegram = TelegramChat(state)
     monkeypatch.setattr(telegram, "client", lambda *args: TelegramStub())
-    with TestClient(fixture_backend(101)) as fixture, TestClient(fixture_backend(None, telegram)) as live:
-        headers = {"Accept": "application/json, text/event-stream", "MCP-Protocol-Version": "2025-06-18"}
+    with (
+        TestClient(fixture_backend(101)) as fixture,
+        TestClient(fixture_backend(None, telegram)) as live,
+    ):
+        headers = {
+            "Accept": "application/json, text/event-stream",
+            "MCP-Protocol-Version": "2025-06-18",
+        }
+
         def mcp(client, method, **params):
-            resp = client.post("/v1/mcp", headers=headers,
-                               json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+            resp = client.post(
+                "/v1/mcp",
+                headers=headers,
+                json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
+            )
             return resp.json()["result"]
 
         assert mcp(fixture, "tools/list") == mcp(live, "tools/list")
-        for action, value, step in (("phone", "+" + "1" * 12, "code"), ("code", "1234", "password"),
-                                    ("password", "fictional", "chat"), ("chat", "999", "chat"),
-                                    ("chat", "101", "done")):
-            assert live.post("/setup", json={"action": action, "value": value, "flow": "test"}).json()["step"] == step
-        args = {"name": "get_messages", "arguments": {"chat_id": 101, "query": "Beacon", "limit": 1, "cursor": 4}}
+        for action, value, step in (
+            ("phone", "+" + "1" * 12, "code"),
+            ("code", "1234", "password"),
+            ("password", "fictional", "chat"),
+            ("chat", "999", "chat"),
+            ("chat", "101", "done"),
+        ):
+            assert (
+                live.post(
+                    "/setup", json={"action": action, "value": value, "flow": "test"}
+                ).json()["step"]
+                == step
+            )
+        args = {
+            "name": "get_messages",
+            "arguments": {"chat_id": 101, "query": "Beacon", "limit": 1, "cursor": 4},
+        }
         result = mcp(live, "tools/call", **args)["structuredContent"]
-        assert result == {"messages": [{"id": 3, "text": "Beacon"}], "has_more": True, "next_cursor": 3}
+        assert result == {
+            "messages": [{"id": 3, "text": "Beacon"}],
+            "has_more": True,
+            "next_cursor": 3,
+        }
         assert calls == [(peer, {"limit": 2, "offset_id": 4, "search": "Beacon"})]
         args["arguments"]["chat_id"] = 202
         assert mcp(live, "tools/call", **args)["isError"]
         assert len(calls) == 1
         assert live.post("/setup", json={"action": "disconnect"}).status_code == 200
         assert not state.exists()
+
+
+def test_perplexity_public_client_without_dcr(backends, tmp_path):
+    routes, invites, _ = backends
+    config = tmp_path / "routes"
+    config.write_text(json.dumps(routes))
+    approved = "https://www.perplexity.ai/rest/connections/oauth_callback"
+    enterprise = "https://enterprise.perplexity.ai/rest/connections/oauth_callback"
+    other = "https://staging.perplexity.ai/rest/connections/oauth_callback"
+    client = {"client_id": "https://www.perplexity.ai/.well-known/mcp-client.json"}
+    config_env = {
+        "PUBLIC_BASE_URL": ISSUER,
+        "MCP_OAUTH_REDIRECT_URIS": ",".join((approved, enterprise, other)),
+        "CLOUD_ROUTES_FILE": str(config),
+        "OAUTH_DB_PATH": str(tmp_path / "oauth.db"),
+    }
+    with (
+        service("cloud_oauth", config_env, tmp_path / "statuses") as url,
+        httpx.Client(base_url=url, trust_env=False) as http,
+    ):
+        metadata = http.get("/.well-known/oauth-authorization-server").json()
+        assert metadata["client_id_metadata_document_supported"] is True
+        assert metadata["token_endpoint_auth_methods_supported"] == [
+            "client_secret_post",
+            "none",
+        ]
+        params = {
+            **auth_request(client["client_id"], secret()),
+            "redirect_uri": approved,
+        }
+        for change in (
+            {"client_id": client["client_id"] + "/"},
+            {"redirect_uri": approved + "/"},
+            {"redirect_uri": other},
+            {"code_challenge_method": "plain"},
+        ):
+            assert (
+                http.get("/authorize", params={**params, **change}).status_code == 400
+            )
+        for callback, user in ((approved, "first"), (enterprise, "second")):
+            exchange, _ = approval(http, client, invites[user], callback)
+            for bad in (
+                {"code_verifier": ""},
+                {"code_verifier": secret()},
+                {"redirect_uri": other},
+            ):
+                assert http.post("/token", data={**exchange, **bad}).status_code == 400
+            tokens = http.post("/token", data=exchange)
+            assert tokens.status_code == 200
+            assert not tool(http, tokens.json()["access_token"])["isError"]
+            refresh = http.post(
+                "/token",
+                data={
+                    **client,
+                    "grant_type": "refresh_token",
+                    "refresh_token": tokens.json()["refresh_token"],
+                },
+            )
+            assert refresh.status_code == 200
+            access = refresh.json()["access_token"]
+            assert (
+                http.post("/revoke", data={**client, "token": access}).status_code
+                == 200
+            )
+            assert rpc(http, access, "tools/list", {}).status_code == 401
