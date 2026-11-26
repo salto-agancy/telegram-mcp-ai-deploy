@@ -1,5 +1,6 @@
 """Single-resource OAuth facade. Each grant routes to one configured backend."""
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -25,6 +26,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 from starlette.routing import Route
 
 from src.cloud_http import serve
+from src.cloud_limits import PilotLimits
 from src.oauth_proxy import _secret
 
 NO_STORE = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
@@ -32,8 +34,8 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS clients (id TEXT PRIMARY KEY, secret TEXT, redirects TEXT);
 CREATE TABLE IF NOT EXISTS grants (
     id INTEGER PRIMARY KEY, client TEXT NOT NULL, user_id TEXT NOT NULL,
-    invite TEXT UNIQUE, resource TEXT, redirect TEXT, challenge TEXT,
-    code TEXT UNIQUE, deadline INTEGER, revoked INTEGER DEFAULT 0);
+    invite TEXT, resource TEXT, redirect TEXT, challenge TEXT,
+    code TEXT UNIQUE, deadline INTEGER, revoked INTEGER DEFAULT 0, manage TEXT);
 CREATE TABLE IF NOT EXISTS tokens (
     digest TEXT PRIMARY KEY, grant_id INTEGER NOT NULL REFERENCES grants(id),
     kind TEXT, expires INTEGER);
@@ -70,7 +72,7 @@ def build_cloud_app(issuer, callbacks, routes, db_path):
     for user, route in routes.items():
         url = urlsplit(route["url"])
         if (not user or not re.fullmatch(r"[0-9a-f]{64}", route["invite_sha256"])
-                or not route["bearer"] or not url.hostname or url.scheme not in {"http", "https"}
+                or type(route["expires"]) is not int or not route["bearer"] or not url.hostname or url.scheme not in {"http", "https"}
                 or url.username is not None or url.query or url.fragment or url.path != "/v1/mcp"):
             raise ValueError("Invalid pilot route")
     for field in ("invite_sha256", "url", "bearer"):
@@ -89,7 +91,21 @@ def build_cloud_app(issuer, callbacks, routes, db_path):
     Path(db_path).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     Path(db_path).touch(mode=0o600, exist_ok=True)
     with database() as db:
+        columns = {row["name"] for row in db.execute("PRAGMA table_info(grants)")}
+        if columns and "manage" not in columns:
+            db.executescript(
+                "BEGIN IMMEDIATE; ALTER TABLE grants RENAME TO old_grants;"
+                + SCHEMA.split("CREATE TABLE IF NOT EXISTS tokens")[0]
+                + "INSERT INTO grants SELECT *, NULL FROM old_grants; DROP TABLE old_grants;"
+                  "ALTER TABLE tokens RENAME TO old_tokens;"
+                + SCHEMA
+                + "INSERT INTO tokens SELECT * FROM old_tokens; DROP TABLE old_tokens; COMMIT;"
+            )
+    with database() as db:
         db.executescript(SCHEMA)
+
+    flows = {}
+    locks = {user: asyncio.Lock() for user in routes}
 
     metadata = build_metadata(AnyHttpUrl(issuer), None,
                               ClientRegistrationOptions(enabled=True, valid_scopes=["mcp"]),
@@ -161,18 +177,117 @@ def build_cloud_app(issuer, callbacks, routes, db_path):
                     "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
                 })
             invite_hash = digest(invite)
-            user = next((u for u, r in routes.items() if hmac.compare_digest(r["invite_sha256"], invite_hash)), None)
+            user = next((u for u, r in routes.items()
+                         if r["expires"] > time.time() and hmac.compare_digest(r["invite_sha256"], invite_hash)), None)
             if user is None:
                 raise OAuthError("access_denied", 403)
-            code = secrets.token_urlsafe(32)
-            try:
-                db.execute("""INSERT INTO grants(client,user_id,invite,resource,redirect,challenge,code,deadline)
-                              VALUES (?,?,?,?,?,?,?,?)""",
-                           (client, user, invite_hash, resource, redirect, challenge, digest(code), time.time() + 120))
-            except sqlite3.IntegrityError:
-                raise OAuthError("access_denied", 403) from None
-        return RedirectResponse(construct_redirect_uri(redirect, code=code, state=params.get("state")),
-                                status_code=303, headers=NO_STORE)
+        async with locks[user]:
+            if routes[user].get("telegram"):
+                flow = secrets.token_urlsafe(32)
+                flows[user] = (flow, params, invite_hash, time.monotonic() + 600)
+                return setup_page(flow, {"step": "phone"})
+            return grant_user(user, params, invite_hash)
+
+    def grant_user(user, params, invite_hash, manage=None):
+        code = secrets.token_urlsafe(32)
+        with database(write=True) as db:
+            db.execute("UPDATE grants SET revoked=1, manage=NULL WHERE user_id=?", (user,))
+            db.execute("""INSERT INTO grants(client,user_id,invite,resource,redirect,challenge,code,deadline,manage)
+                          VALUES (?,?,?,?,?,?,?,?,?)""",
+                       (params["client_id"], user, invite_hash, resource, params["redirect_uri"],
+                        params["code_challenge"], digest(code), time.time() + 120, digest(manage) if manage else None))
+        result = RedirectResponse(construct_redirect_uri(params["redirect_uri"], code=code, state=params.get("state")),
+                                  status_code=303, headers=NO_STORE)
+        if manage:
+            result.set_cookie("__Secure-pilot", manage, secure=True, httponly=True, samesite="strict", path="/setup")
+        return result
+
+    def setup_page(flow="", data=None):
+        data = data or {}
+        step = data.get("step", "disconnect")
+        labels = {"phone": "Номер Telegram в формате +...", "code": "Код из приложения Telegram",
+                  "password": "Пароль двухэтапной проверки", "chat": "Разрешить чтение одного тестового чата",
+                  "disconnect": "Отключить Telegram и удалить сессию"}
+        if step == "chat":
+            options = "".join(f'<option value="{escape(key)}">{escape(title)}</option>'
+                              for key, title in data.get("choices", []))
+            field = f'<select name=value required><option value="">Выбери чат</option>{options}</select>'
+        elif step == "disconnect":
+            field = ""
+        else:
+            kind = {"phone": "tel", "code": "text", "password": "password"}[step]
+            field = f'<input name=value type={kind} autocomplete=off required>'
+        retry = "<p>Попробуй ещё раз.</p>" if data.get("retry") else ""
+        button = "Отключить" if step == "disconnect" else "Продолжить"
+        if step == "chat":
+            button = "Разрешить чтение"
+        return HTMLResponse(
+            f'<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width">'
+            f'<h1>Telegram MCP · Подключение</h1>{retry}<form method=post action=/setup>'
+            f'<input type=hidden name=flow value="{flow}"><input type=hidden name=action value="{step}">'
+            f'<label>{labels[step]} {field}</label><button>{button}</button></form>',
+            headers={**NO_STORE, "Referrer-Policy": "same-origin",
+                     "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"},
+        )
+
+    async def setup(request):
+        if request.method == "GET":
+            return setup_page()
+        if request.headers.get("origin") != issuer:
+            raise OAuthError("access_denied", 403)
+        data = await form(request)
+        action = data.get("action")
+        flow = data.get("flow", "")
+        if action == "disconnect":
+            manage = request.cookies.get("__Secure-pilot")
+            with database() as db:
+                record = db.execute("SELECT user_id FROM grants WHERE manage=?",
+                                    (digest(manage or ""),)).fetchone()
+            user = record["user_id"] if record else None
+        else:
+            user = next((u for u, f in flows.items() if f[0] == flow), None)
+        if user not in locks:
+            raise OAuthError("access_denied", 403)
+        async with locks[user]:
+            if action == "disconnect":
+                with database(write=True) as db:
+                    if not db.execute("SELECT 1 FROM grants WHERE user_id=? AND manage=?",
+                                      (user, digest(manage))).fetchone():
+                        raise OAuthError("access_denied", 403)
+                    db.execute("UPDATE grants SET revoked=1 WHERE user_id=?", (user,))
+                flows.pop(user, None)
+            else:
+                pending = flows.get(user)
+                if (not pending or pending[0] != flow or pending[3] <= time.monotonic()
+                        or routes[user]["expires"] <= time.time()
+                        or action not in {"phone", "code", "password", "chat"}):
+                    raise OAuthError("access_denied", 403)
+            if action == "chat":
+                with database(write=True) as db:
+                    db.execute("UPDATE grants SET revoked=1 WHERE user_id=?", (user,))
+            route = routes[user]
+            async with httpx.AsyncClient(trust_env=False, timeout=30) as session:
+                try:
+                    reply = await session.post(route["url"].removesuffix("/v1/mcp") + "/setup",
+                                               headers={"Authorization": "Bearer " + route["bearer"]},
+                                               json={"action": action, "flow": flow, "value": data.get("value", "")})
+                except httpx.RequestError:
+                    return Response(status_code=502)
+            if reply.status_code == 429:
+                return Response(status_code=429, headers={"Retry-After": "60"})
+            if reply.status_code != 200:
+                return Response(status_code=502)
+            if action == "disconnect":
+                with database(write=True) as db:
+                    db.execute("DELETE FROM tokens WHERE grant_id IN (SELECT id FROM grants WHERE user_id=?)", (user,))
+                    db.execute("DELETE FROM grants WHERE user_id=?", (user,))
+                result = HTMLResponse("<p>Telegram отключён.</p>", headers=NO_STORE)
+                result.delete_cookie("__Secure-pilot", path="/setup", secure=True)
+                return result
+            if reply.json().get("step") == "done":
+                flows.pop(user)
+                return grant_user(user, pending[1], pending[2], secrets.token_urlsafe(32))
+            return setup_page(flow, reply.json())
 
     def client_auth(db, data):
         client = data.get("client_id")
@@ -235,20 +350,27 @@ def build_cloud_app(issuer, callbacks, routes, db_path):
         with database() as db:
             grant = token_grant(db, raw, "access_token") if scheme.lower() == "bearer" else None
         route = routes.get(grant["user_id"]) if grant else None
+        unauthorized = {**NO_STORE, "WWW-Authenticate":
+                        f'Bearer resource_metadata="{issuer}/.well-known/oauth-protected-resource/mcp"'}
         if not route:
-            return Response(status_code=401, headers={**NO_STORE, "WWW-Authenticate":
-                f'Bearer resource_metadata="{issuer}/.well-known/oauth-protected-resource/mcp"'})
+            return Response(status_code=401, headers=unauthorized)
         if request.url.query:
             raise OAuthError()
         if request.method != "POST":
             return Response(status_code=405, headers={"Allow": "POST"})
-        headers = {k: request.headers[k] for k in ("accept", "content-type", "mcp-protocol-version") if k in request.headers}
-        headers["Authorization"] = "Bearer " + route["bearer"]
-        async with httpx.AsyncClient(trust_env=False, timeout=15) as session:
-            try:
-                response = await session.post(route["url"], headers=headers, content=body)
-            except httpx.RequestError:
-                return Response(status_code=502)
+        async with locks[grant["user_id"]]:
+            with database() as db:
+                if not token_grant(db, raw, "access_token"):
+                    return Response(status_code=401, headers=unauthorized)
+            headers = {k: request.headers[k] for k in ("accept", "content-type", "mcp-protocol-version") if k in request.headers}
+            headers["Authorization"] = "Bearer " + route["bearer"]
+            async with httpx.AsyncClient(trust_env=False, timeout=15) as session:
+                try:
+                    response = await session.post(route["url"], headers=headers, content=body)
+                except httpx.RequestError:
+                    return Response(status_code=502)
+        if response.status_code in (401, 403):
+            return Response(status_code=502)
         if response.status_code >= 300:
             return Response(status_code=response.status_code if response.is_client_error else 502)
         return Response(response.content, status_code=response.status_code,
@@ -264,11 +386,12 @@ def build_cloud_app(issuer, callbacks, routes, db_path):
         Route("/authorize", authorize, methods=["GET", "POST"]),
         Route("/token", token, methods=["POST"]),
         Route("/revoke", revoke, methods=["POST"]),
+        Route("/setup", setup, methods=["GET", "POST"]),
         Route("/mcp", mcp, methods=["GET", "POST", "DELETE"]),
     ])
     app = Starlette(routes=endpoints, exception_handlers={OAuthError: error})
     app.router.redirect_slashes = False
-    return app
+    return PilotLimits(app)
 
 
 if __name__ == "__main__":

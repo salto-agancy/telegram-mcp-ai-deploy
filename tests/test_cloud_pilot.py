@@ -86,6 +86,7 @@ def backends(tmp_path_factory):
                 "url": private + "/v1/mcp",
                 "bearer": bearer,
                 "invite_sha256": hashlib.sha256(invite.encode()).hexdigest(),
+                "expires": int(time.time()) + 3600,
             }
             invites[user] = invite
         yield routes, invites, root
@@ -301,17 +302,6 @@ def test_two_users_rotation_restart_and_revoke(facade, backends):
             )
         assert sorted(r.status_code for r in results) == [200, 400]
         first = next(r.json() for r in results if r.status_code == 200)
-        assert (
-            http.post(
-                "/authorize",
-                data={
-                    **auth_request(credentials["client_id"], secret()),
-                    "invite": invites["first"],
-                },
-                headers={"Origin": ISSUER},
-            ).status_code
-            == 403
-        )
         exchange2, second_urls = approval(http, credentials, invites["second"])
         urls += second_urls
         second = http.post("/token", data=exchange2).json()
@@ -452,3 +442,88 @@ def test_expiry_and_revocation_survive_restart(facade):
             ).status_code
             == 400
         )
+
+
+def test_invite_reuse_and_rate_limit(facade):
+    start, invites, _, _ = facade
+    with start() as http:
+        client = register(http)
+        exchange, _ = approval(http, client, invites["first"])
+        old = http.post("/token", data=exchange).json()
+        new_client = register(http)
+        exchange, _ = approval(http, new_client, invites["first"])
+        assert rpc(http, old["access_token"], "tools/list", {}).status_code == 401
+        new = http.post("/token", data=exchange).json()
+        assert not tool(http, new["access_token"])["isError"]
+        assert http.post("/token", data={**client, "grant_type": "refresh_token",
+                                          "refresh_token": old["refresh_token"]}).status_code == 400
+        for _ in range(13):
+            register(http)
+        assert http.post("/register", json={"redirect_uris": [CALLBACK]}).status_code == 429
+
+
+def test_telegram_backend_contract(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from starlette.testclient import TestClient
+    from telethon.errors import SessionPasswordNeededError
+    from telethon.tl.types import InputPeerUser
+
+    from src.cloud_backend import fixture_backend
+    from src.cloud_setup import TelegramChat
+
+    peer = InputPeerUser(101, 99)
+    calls = []
+
+    class TelegramStub:
+        session = SimpleNamespace(save=lambda: "fictional-session")
+
+        async def connect(self):
+            pass
+
+        async def disconnect(self):
+            pass
+
+        async def send_code_request(self, phone):
+            assert phone.startswith("+")
+            return SimpleNamespace(phone_code_hash="fictional")
+
+        async def is_user_authorized(self):
+            return False
+
+        async def sign_in(self, **args):
+            if "code" in args:
+                raise SessionPasswordNeededError(request=None)
+            assert "password" in args
+
+        async def get_dialogs(self, limit):
+            return [SimpleNamespace(id=101, input_entity=peer, name="Test")]
+
+        async def get_messages(self, selected, **args):
+            calls.append((selected, args))
+            return [SimpleNamespace(id=3, message="Beacon"), SimpleNamespace(id=2, message="Signal")]
+
+    state = tmp_path / "session.json"
+    telegram = TelegramChat(state)
+    monkeypatch.setattr(telegram, "client", lambda *args: TelegramStub())
+    with TestClient(fixture_backend(101)) as fixture, TestClient(fixture_backend(None, telegram)) as live:
+        headers = {"Accept": "application/json, text/event-stream", "MCP-Protocol-Version": "2025-06-18"}
+        def mcp(client, method, **params):
+            resp = client.post("/v1/mcp", headers=headers,
+                               json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+            return resp.json()["result"]
+
+        assert mcp(fixture, "tools/list") == mcp(live, "tools/list")
+        for action, value, step in (("phone", "+" + "1" * 12, "code"), ("code", "1234", "password"),
+                                    ("password", "fictional", "chat"), ("chat", "999", "chat"),
+                                    ("chat", "101", "done")):
+            assert live.post("/setup", json={"action": action, "value": value, "flow": "test"}).json()["step"] == step
+        args = {"name": "get_messages", "arguments": {"chat_id": 101, "query": "Beacon", "limit": 1, "cursor": 4}}
+        result = mcp(live, "tools/call", **args)["structuredContent"]
+        assert result == {"messages": [{"id": 3, "text": "Beacon"}], "has_more": True, "next_cursor": 3}
+        assert calls == [(peer, {"limit": 2, "offset_id": 4, "search": "Beacon"})]
+        args["arguments"]["chat_id"] = 202
+        assert mcp(live, "tools/call", **args)["isError"]
+        assert len(calls) == 1
+        assert live.post("/setup", json={"action": "disconnect"}).status_code == 200
+        assert not state.exists()
