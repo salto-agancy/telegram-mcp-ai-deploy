@@ -61,18 +61,8 @@ async function api(action, value) {
 }
 function render(data) {
   panel.replaceChildren();
-  if (data.step === 'phone' || data.step === 'code' || data.step === 'password') {
-    const names = {phone:'Номер Telegram в формате +…', code:'Код из приложения Telegram', password:'Пароль двухэтапной проверки'};
-    const field = show('input', '', {type: data.step === 'phone' ? 'tel' : data.step === 'password' ? 'password' : 'text', autocomplete:'off', placeholder:names[data.step], ariaLabel:names[data.step]});
-    if (data.step === 'phone' && app.isVersionAtLeast('6.9')) {
-      button('Поделиться номером', () => app.requestContact((shared, info) => {
-        const number = info?.responseUnsafe?.contact?.phone_number;
-        if (shared && number) api('phone', '+' + number.replace(/\D/g, ''));
-        else messages.textContent = 'Введите номер вручную.';
-      }));
-    }
-    button('Продолжить', () => { const value=data.step === 'password' ? field.value : field.value.trim(); field.value=''; api(data.step,value); });
-    if (data.step !== 'phone') button('Другой номер', () => render({step:'phone'}));
+  if (data.step === 'login_closed') {
+    show('p', 'Подключение новых аккаунтов Telegram приостановлено.');
   } else if (data.step === 'chats') {
     const filter = show('input', '', {type:'search', placeholder:'Поиск чатов', ariaLabel:'Поиск чатов'});
     const list = show('div', '');
@@ -105,7 +95,6 @@ function render(data) {
     }
     button('Создать API-ключ', () => api('api_key'));
     if (data.key_sent) show('p', 'Ключ отправлен в личный чат с ботом.');
-    button('Подключить заново', () => render({step:'phone'}));
     button('Удалить всё', () => { if (confirm('Отключить Telegram и освободить место?')) api('delete'); });
   } else if (data.step === 'deleted') {
     storage('removeItem', 'cloud-unlock-v1').then(() => { proof=undefined; }).catch(() => {});

@@ -296,6 +296,8 @@ def build_cloud_app(issuer, callbacks, routes, db_path, *, mini=None, bot_userna
         )
 
     async def setup(request):
+        if mini:
+            return Response(status_code=410, headers=NO_STORE)
         if request.method == "GET":
             return setup_page()
         if request.headers.get("origin") != issuer:

@@ -1,7 +1,6 @@
 import hmac
 import json
 import secrets
-from types import SimpleNamespace
 from urllib.parse import urlencode
 
 import pytest
@@ -30,31 +29,13 @@ def test_bad_and_expired_init_data():
 
 
 @pytest.mark.asyncio
-async def test_telegram_account_must_match(tmp_path, monkeypatch):
+async def test_slot_has_no_credential_entry(tmp_path):
     telegram = SlotTelegram(tmp_path / "session.aes", 1)
-    calls = []
-
-    class FakeClient:
-        async def connect(self):
-            pass
-
-        async def disconnect(self):
-            pass
-
-        async def sign_in(self, **data):
-            pass
-
-        async def get_me(self):
-            return SimpleNamespace(id=456)
-
-        async def log_out(self):
-            calls.append("logout")
-
-    client = FakeClient()
-    telegram.pending = {"user": 123, "client": client, "step": "code", "phone": "fixture", "phone_hash": "fixture"}
-    result = await telegram.configure(secrets.token_bytes(32), 123, "code", "12345")
-    assert result["step"] == "phone"
-    assert calls == ["logout"]
+    key = secrets.token_bytes(32)
+    assert await telegram.configure(key, 123, "status", None) == {"step": "login_closed"}
+    for action in ("phone", "code", "password"):
+        with pytest.raises(ValueError):
+            await telegram.configure(key, 123, action, None)
     assert telegram.pending is None
     assert not telegram.encrypted.path.exists()
 

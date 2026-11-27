@@ -201,3 +201,12 @@ async def test_cimd_internal_addresses_are_not_dialled(monkeypatch):
     monkeypatch.setattr(asyncio, "open_connection", dial)
     with pytest.raises(ValueError, match="Non-public"):
         await cloud_cimd.fetch_document("https://client.example/metadata.json")
+
+def test_removed_login_paths(community):
+    create_app, _, _ = community
+    with TestClient(create_app(), base_url=ISSUER) as http:
+        assert "requestContact" not in http.get("/app").text
+        for action in ("phone", "code", "password"):
+            assert http.post(f"/app/api/{action}", content=b"invalid").status_code == 410
+        assert http.get("/setup").status_code == 410
+        assert http.post("/setup", content=b"invalid").status_code == 410

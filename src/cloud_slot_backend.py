@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import re
 from base64 import b64decode, b64encode
 from typing import Annotated
 
@@ -18,7 +17,6 @@ from telethon import utils
 from telethon.errors import (
     FloodWaitError,
     RPCError,
-    SessionPasswordNeededError,
     UnauthorizedError,
 )
 from telethon.extensions import BinaryReader
@@ -68,7 +66,7 @@ class SlotTelegram(TelegramChat):
                 if pending["step"] == "chats":
                     result["choices"] = [(i, c[0]) for i, c in pending["choices"].items()]
                 return result
-            return {"step": "connected" if state else "phone"}
+            return {"step": "connected" if state else "login_closed"}
         if action == "delete":
             if state:
                 try:
@@ -94,40 +92,7 @@ class SlotTelegram(TelegramChat):
             self.encrypted.write(key, json.dumps(state).encode())
             self.pending = None
             return {"step": "connected"}
-        if action == "phone" and isinstance(value, str) and re.fullmatch(r"\+[1-9][0-9]{6,14}", value):
-            pending = {"user": user, "client": self.client(), "phone": value, "step": "phone"}
-            self.pending = pending
-            asyncio.get_running_loop().call_later(300, self.expire, pending)
-        if not pending or pending["step"] != action or action not in {"phone", "code", "password"}:
-            raise ValueError
-        return await self.sign_in(pending, action, value)
-
-    async def sign_in(self, pending, action, value):
-        client = pending["client"]
-        try:
-            await client.connect()
-            if action == "phone":
-                sent = await client.send_code_request(value)
-                pending.update(phone_hash=sent.phone_code_hash, step="code")
-                return {"step": "code"}
-            if action == "code":
-                await client.sign_in(phone=pending["phone"], code=value, phone_code_hash=pending["phone_hash"])
-            else:
-                await client.sign_in(password=value)
-            if (await client.get_me()).id != pending["user"]:
-                self.pending = None
-                await client.log_out()
-                return {"step": "phone", "error": "Введите номер аккаунта, который открыл Mini App."}
-            choices = await self.choices(client)
-            user = pending["user"]
-            pending.clear()
-            pending.update(user=user, session=client.session.save(), step="chats", choices=choices)
-            return {"step": "chats", "choices": [(i, c[0]) for i, c in choices.items()]}
-        except SessionPasswordNeededError:
-            pending["step"] = "password"
-            return {"step": "password"}
-        finally:
-            await client.disconnect()
+        raise ValueError
 
     async def run(self, state, call):
         for attempt in range(2):
