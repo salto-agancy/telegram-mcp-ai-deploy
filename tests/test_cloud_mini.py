@@ -20,11 +20,13 @@ def signed(credential, timestamp):
 def test_bad_and_expired_init_data():
     credential = secrets.token_urlsafe(32)
     valid = signed(credential, 5000)
-    assert telegram_identity(valid, credential, 5100) == (123, "")
+    assert telegram_identity(valid, credential, 5300) == (123, "")
     with pytest.raises(ValueError):
         telegram_identity(valid.replace("123", "456"), credential, 5100)
     with pytest.raises(ValueError):
-        telegram_identity(valid, credential, 9000)
+        telegram_identity(valid, credential, 5301)
+    with pytest.raises(ValueError):
+        telegram_identity(valid, credential, 4999)
 
 
 @pytest.mark.asyncio

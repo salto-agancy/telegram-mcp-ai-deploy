@@ -513,11 +513,11 @@ def build_cloud_app(issuer, callbacks, routes, db_path, *, mini=None, bot_userna
                     db.executemany("DELETE FROM grants WHERE id=?", ((grant_id,) for grant_id in ids))
                 if action == "delete":
                     db.execute("UPDATE cloud_slots SET user_id=NULL, wrapped=NULL WHERE id=? AND user_id=?", (slot, user))
+                    mini.slots.clear_launches(db, user)
                 if action == "api_key":
-                    raw = "tgcloud_" + secrets.token_urlsafe(32)
                     row = db.execute("INSERT INTO grants(client,user_id,resource) VALUES (?,?,?)", ("api_key", slot_id, resource))
-                    issue(db, row.lastrowid, "api_key", raw, 2**62, key)
-                    result["api_key"] = raw
+                    issue(db, row.lastrowid, "api_key", value, 2**62, key)
+                    result["key_sent"] = True
                 result["connections"] = [{"id": row["id"], "name": urlsplit(row["redirect"]).netloc if row["redirect"] else "API-ключ"}
                                          for row in db.execute("SELECT id,redirect FROM grants WHERE user_id=? AND revoked=0", (slot_id,))]
             return result

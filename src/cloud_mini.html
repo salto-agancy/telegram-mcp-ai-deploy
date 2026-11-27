@@ -17,7 +17,7 @@ label { display: block; } label[hidden] { display: none; }
 const app = window.Telegram?.WebApp;
 const panel = document.querySelector('#panel');
 const messages = document.querySelector('#messages');
-let proof;
+let proof, nonce;
 function show(tag, text, attrs={}, parent=panel) {
   const el = document.createElement(tag);
   el.textContent = text;
@@ -32,7 +32,7 @@ function storage(method, ...args) {
 async function api(action, value) {
   messages.textContent = '';
   try {
-    const response = await fetch('/app/api/' + action, {method:'POST', headers:{'Content-Type':'application/json','X-Telegram-Init-Data':app.initData}, body:JSON.stringify({proof,value})});
+    const response = await fetch('/app/api/' + action, {method:'POST', headers:{'Content-Type':'application/json','X-Cloud-Nonce':nonce}, body:JSON.stringify({proof,value})});
     const data = await response.json();
     if (data.error) messages.textContent = data.error;
     if (response.ok && data.step) render(data);
@@ -84,10 +84,7 @@ function render(data) {
       show('button','Отключить',{onclick:()=>api('detach',connection.id)},row);
     }
     button('Создать API-ключ', () => api('api_key'));
-    if (data.api_key) {
-      const key = show('p', 'Скопируйте ключ сейчас. Он показывается один раз. ');
-      show('code', data.api_key, {}, key);
-    }
+    if (data.key_sent) show('p', 'Ключ отправлен в личный чат с ботом.');
     button('Подключить заново', () => render({step:'phone'}));
     button('Удалить всё', () => { if (confirm('Отключить Telegram и освободить место?')) api('delete'); });
   } else if (data.step === 'deleted') {
@@ -98,6 +95,16 @@ function render(data) {
 (async () => {
   if (!app?.initData) throw Error();
   app.ready();
+  const signature = new URLSearchParams(app.initData).get('hash');
+  const saved = JSON.parse(sessionStorage.getItem('cloud-launch') || 'null');
+  if (saved && saved.signature === signature) {
+    nonce = saved.nonce;
+  } else {
+    const response = await fetch('/app/api/session', {method:'POST', headers:{'X-Telegram-Init-Data':app.initData}});
+    if (!response.ok) throw Error();
+    nonce = (await response.json()).nonce;
+    sessionStorage.setItem('cloud-launch', JSON.stringify({signature, nonce}));
+  }
   proof = await storage('getItem', 'cloud-unlock-v1');
   if (!proof) {
     proof = Array.from(crypto.getRandomValues(new Uint8Array(32)), n=>n.toString(16).padStart(2,'0')).join('');

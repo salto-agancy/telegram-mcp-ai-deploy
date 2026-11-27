@@ -21,6 +21,10 @@ class Slots:
                 id INTEGER PRIMARY KEY, user_id INTEGER UNIQUE, wrapped BLOB
             )""")
             db.execute("CREATE TABLE IF NOT EXISTS cloud_invites (digest TEXT PRIMARY KEY, expires INTEGER)")
+            db.execute("""CREATE TABLE IF NOT EXISTS cloud_launches (
+                signature TEXT PRIMARY KEY, nonce_hash TEXT UNIQUE, user_id INTEGER,
+                start_param TEXT, expires INTEGER NOT NULL
+            )""")
             if db.execute("SELECT 1 FROM cloud_slots WHERE id>? AND user_id IS NOT NULL", (count,)).fetchone():
                 raise ValueError("Cannot remove a slot that is in use")
             db.executemany("INSERT OR IGNORE INTO cloud_slots(id) VALUES (?)", ((i,) for i in range(1, count + 1)))
@@ -33,6 +37,11 @@ class Slots:
                 db.execute("PRAGMA secure_delete=ON")
                 db.execute("BEGIN IMMEDIATE")
             yield db
+
+    @staticmethod
+    def clear_launches(db, user):
+        # Retain the spent signature until expiry even if the slot is reclaimed.
+        db.execute("UPDATE cloud_launches SET user_id=NULL, start_param=NULL, nonce_hash=NULL WHERE user_id=?", (user,))
 
     def lookup(self, user_id):
         with self.db() as db:

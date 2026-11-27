@@ -17,12 +17,12 @@ from starlette.responses import HTMLResponse, JSONResponse
 from starlette.routing import Route
 
 from src.cloud_bot import telegram_api
-from src.cloud_secure import encode, unwrap, wrap
+from src.cloud_secure import digest, encode, unwrap, wrap
 
 NO_STORE = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
 
 
-def telegram_identity(init_data, credential, now=None):
+def verified_launch(init_data, credential, now=None):
     pairs = parse_qsl(init_data, keep_blank_values=True, strict_parsing=True, max_num_fields=30)
     fields = dict(pairs)
     if len(fields) != len(pairs):
@@ -31,12 +31,16 @@ def telegram_identity(init_data, credential, now=None):
     secret = hmac.digest(b"WebAppData", credential.encode(), "sha256")
     check = "\n".join(f"{name}={value}" for name, value in sorted(fields.items()))
     age = (int(time.time()) if now is None else now) - int(fields.get("auth_date", 0))
-    if not 0 <= age <= 3600 or not hmac.compare_digest(hmac.digest(secret, check.encode(), "sha256").hex(), signature):
+    if not 0 <= age <= 300 or not hmac.compare_digest(hmac.digest(secret, check.encode(), "sha256").hex(), signature):
         raise ValueError
     user = json.loads(fields.get("user", "{}"))["id"]
     if type(user) is not int or user <= 0:
         raise ValueError
-    return user, fields.get("start_param", "")
+    return user, fields.get("start_param", ""), signature, int(fields["auth_date"]) + 300
+
+
+def telegram_identity(init_data, credential, now=None):
+    return verified_launch(init_data, credential, now)[:2]
 
 
 class MiniApp:
@@ -73,12 +77,38 @@ class MiniApp:
         csp = f"default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; script-src https://telegram.org 'sha256-{script_hash}'; base-uri 'none'"
         return HTMLResponse(html, headers={**NO_STORE, "Content-Security-Policy": csp})
 
+    def open_launch(self, request):
+        now = int(time.time())
+        user, start, signature, expires = verified_launch(
+            request.headers.get("x-telegram-init-data", ""), self.credential, now
+        )
+        nonce = secrets.token_urlsafe(32)
+        with self.slots.db(write=True) as db:
+            db.execute("DELETE FROM cloud_launches WHERE expires < ?", (now,))
+            created = db.execute(
+                "INSERT OR IGNORE INTO cloud_launches SELECT ?,?,?,?,? "
+                "WHERE EXISTS (SELECT 1 FROM cloud_slots WHERE user_id=?)",
+                (digest(signature), digest(nonce), user, start, expires, user),
+            )
+            if created.rowcount != 1:
+                raise ValueError
+        return JSONResponse({"nonce": nonce}, headers=NO_STORE)
+
     async def api(self, request):
         action = request.path_params["action"]
         try:
             if request.headers.get("origin") != self.issuer:
                 raise ValueError
-            user, start_param = telegram_identity(request.headers.get("x-telegram-init-data", ""), self.credential)
+            if action == "session":
+                return self.open_launch(request)
+            with self.slots.db() as db:
+                launch = db.execute(
+                    "SELECT user_id,start_param FROM cloud_launches WHERE nonce_hash=? AND expires>=?",
+                    (digest(request.headers.get("x-cloud-nonce", "")), int(time.time())),
+                ).fetchone()
+            if launch is None:
+                raise ValueError
+            user, start_param = launch
             data = await request.json()
             slot = self.slots.lookup(user)["id"]
             async with self.locks[slot]:
@@ -104,8 +134,15 @@ class MiniApp:
             else:
                 with self.slots.db(write=True) as db:
                     db.execute("UPDATE cloud_slots SET user_id=NULL, wrapped=NULL WHERE user_id=?", (user,))
+                    self.slots.clear_launches(db, user)
             self.notified.discard(user)
         if result.get("step") == "connected" and self.manage:
+            if action == "api_key":
+                value = "tgcloud_" + secrets.token_urlsafe(32)
+                async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
+                    await telegram_api(client, self.credential, "sendMessage", {
+                        "chat_id": user, "text": "Ваш личный API-ключ для MCP:\n" + value,
+                    })
             if action == "decision":
                 self.consent.decide(start_param, slot, user, key, value)
             result.update(self.manage(slot, user, key, action, value))

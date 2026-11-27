@@ -56,7 +56,16 @@ def community(tmp_path, monkeypatch):
         return {"origin": ISSUER, "x-telegram-init-data": urlencode(data)}
 
     def mini_call(http, action, value=None, start=""):
-        return http.post(f"/app/api/{action}", headers=signed(start), json={"proof": proof, "value": value})
+        launches = getattr(http, "launches", {})
+        if start not in launches:
+            headers = signed(start)
+            first = http.post("/app/api/session", headers=headers)
+            assert first.status_code == 200
+            assert http.post("/app/api/session", headers=headers).status_code == 403
+            launches[start] = first.json()["nonce"]
+            http.launches = launches
+        return http.post(f"/app/api/{action}", headers={"origin": ISSUER, "x-cloud-nonce": launches[start]},
+                         json={"proof": proof, "value": value})
 
     return create_app, mini_call, slots
 
@@ -122,15 +131,33 @@ def test_dcr_browser_binding_and_refresh_restart(community, method):
         assert restarted.post("/token", data=refresh).status_code == 400
 
 
-def test_api_key_and_delete_everything(community):
+def test_api_key_and_delete_everything(community, monkeypatch):
     create_app, mini_call, slots = community
     with TestClient(create_app(), base_url=ISSUER) as http:
-        key = mini_call(http, "api_key").json()["api_key"]
+        delivered = []
+
+        async def deliver(client, credential, method, payload):
+            assert method == "sendMessage" and payload["chat_id"] == 123
+            delivered.append(payload["text"].splitlines()[-1])
+
+        async def unavailable(*args):
+            raise httpx.ConnectError("unavailable")
+
+        monkeypatch.setattr("src.cloud_mini.telegram_api", unavailable)
+        assert mini_call(http, "api_key").status_code == 502
+        with slots.db() as db:
+            assert db.execute("SELECT count(*) FROM tokens").fetchone()[0] == 0
+
+        monkeypatch.setattr("src.cloud_mini.telegram_api", deliver)
+        response = mini_call(http, "api_key")
+        key, = delivered
+        assert response.json()["key_sent"] and key not in response.text
         assert "api_key" not in mini_call(http, "status").json()
         auth = {"Authorization": "Bearer " + key}
         assert http.post("/mcp", headers=auth).status_code == 200
         assert mini_call(http, "delete").json()["step"] == "deleted"
         assert http.post("/mcp", headers=auth).status_code == 401
+        assert mini_call(http, "status").status_code == 403
     assert slots.lookup(123) is None
     with slots.db() as db:
         assert db.execute("SELECT count(*) FROM tokens").fetchone()[0] == 0
