@@ -73,6 +73,21 @@ function render(data) {
       catch { messages.textContent = 'Выделите адрес и скопируйте вручную.'; }
     });
     button('Изменить чаты', () => api('edit'));
+    if (data.oauth) {
+      show('h2', data.oauth.domain);
+      show('p', 'Код подтверждения ' + data.oauth.code);
+      button('Разрешить', () => api('decision', true));
+      button('Отклонить', () => api('decision', false));
+    }
+    for (const connection of data.connections ?? []) {
+      const row = show('p', connection.name + ' ');
+      show('button','Отключить',{onclick:()=>api('detach',connection.id)},row);
+    }
+    button('Создать API-ключ', () => api('api_key'));
+    if (data.api_key) {
+      const key = show('p', 'Скопируйте ключ сейчас. Он показывается один раз. ');
+      show('code', data.api_key, {}, key);
+    }
     button('Подключить заново', () => render({step:'phone'}));
     button('Удалить всё', () => { if (confirm('Отключить Telegram и освободить место?')) api('delete'); });
   } else if (data.step === 'deleted') {

@@ -15,6 +15,7 @@ def slot_count():
 class Slots:
     def __init__(self, path, count):
         self.path, self.count = path, count
+        os.close(os.open(path, os.O_CREAT | os.O_WRONLY, 0o600))
         with self.db(write=True) as db:
             db.execute("""CREATE TABLE IF NOT EXISTS cloud_slots (
                 id INTEGER PRIMARY KEY, user_id INTEGER UNIQUE, wrapped BLOB
@@ -29,6 +30,7 @@ class Slots:
         with closing(sqlite3.connect(self.path)) as db, db:
             db.row_factory = sqlite3.Row
             if write:
+                db.execute("PRAGMA secure_delete=ON")
                 db.execute("BEGIN IMMEDIATE")
             yield db
 

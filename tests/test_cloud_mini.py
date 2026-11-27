@@ -55,3 +55,24 @@ async def test_telegram_account_must_match(tmp_path, monkeypatch):
     assert calls == ["logout"]
     assert telegram.pending is None
     assert not telegram.encrypted.path.exists()
+
+
+@pytest.mark.asyncio
+async def test_delete_logs_out_and_erases_session(tmp_path, monkeypatch):
+    telegram = SlotTelegram(tmp_path / "session.aes", 1)
+    key = secrets.token_bytes(32)
+    telegram.encrypted.write(key, json.dumps({"user": 123, "session": "fixture", "peers": {}}).encode())
+    calls = []
+
+    class FakeClient:
+        async def log_out(self):
+            calls.append("logout")
+            return True
+
+    async def network(state, operation):
+        return await operation(FakeClient())
+
+    monkeypatch.setattr(telegram, "run", network)
+    assert await telegram.configure(key, 123, "delete", None) == {"step": "deleted"}
+    assert calls == ["logout"]
+    assert not telegram.encrypted.path.exists()

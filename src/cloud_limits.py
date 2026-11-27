@@ -15,11 +15,16 @@ class PilotLimits:
         self.proxy = ip_address(trusted) if trusted else None
         self.window = -1
         self.counts = {}
-        self.limits = {"/register": 15, "/authorize": 30, "/token": 60,
+        self.limits = {"/register": 15, "/authorize": 30, "/authorize/status": 90, "/token": 60,
                        "/setup": 15, "/mcp": 120}
 
     async def __call__(self, scope, receive, send):
-        limit = self.limits.get(scope.get("path"))
+        path = scope.get("path", "")
+        if path.startswith("/app/api/"):
+            path = "/setup"
+        if path.startswith("/authorize/status/"):
+            path = "/authorize/status"
+        limit = self.limits.get(path)
         if scope["type"] == "http" and limit:
             window = int(time.monotonic() // 60)
             if window != self.window:
@@ -33,7 +38,7 @@ class PilotLimits:
                     peer = str(ip_address(Headers(scope=scope)["cf-connecting-ip"]))
                 except (KeyError, ValueError):
                     return await Response(status_code=403)(scope, receive, send)
-            key = (scope["path"], peer)
+            key = (path, peer)
             if self.counts.get(key, 0) >= limit or (key not in self.counts and len(self.counts) >= 4096):
                 return await Response(status_code=429, headers={"Retry-After": "60"})(scope, receive, send)
             self.counts[key] = self.counts.get(key, 0) + 1

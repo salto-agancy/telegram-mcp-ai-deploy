@@ -16,6 +16,7 @@ from cryptography.exceptions import InvalidTag
 from starlette.responses import HTMLResponse, JSONResponse
 from starlette.routing import Route
 
+from src.cloud_bot import telegram_api
 from src.cloud_secure import encode, unwrap, wrap
 
 NO_STORE = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
@@ -42,6 +43,8 @@ class MiniApp:
     def __init__(self, issuer, credential, slots, backends):
         self.issuer, self.credential, self.slots, self.backends = issuer, credential, slots, backends
         self.locks = {index: asyncio.Lock() for index in backends}
+        self.consent = self.manage = None
+        self.notified = set()
 
     def key(self, user, proof):
         if not isinstance(proof, str) or not re.fullmatch(r"[0-9a-f]{64}", proof):
@@ -88,14 +91,40 @@ class MiniApp:
         return JSONResponse({**result, "mcp_url": self.issuer + "/mcp"}, headers=NO_STORE)
 
     async def action(self, slot, key, user, start_param, action, value):
-        if action not in {"status", "phone", "code", "password", "chats", "edit", "delete"}:
+        management = {"api_key", "detach", "decision"}
+        if action not in {"status", "phone", "code", "password", "chats", "edit", "delete"} | management:
             raise ValueError
-        reply = await self.call(slot, key, "/setup", {"action": action, "user_id": user, "value": value})
+        reply = await self.call(slot, key, "/setup", {"action": "status" if action in management else action, "user_id": user, "value": value})
         result = reply.json()
         if action == "delete" and result.get("step") == "deleted":
-            with self.slots.db(write=True) as db:
-                db.execute("UPDATE cloud_slots SET user_id=NULL, wrapped=NULL WHERE user_id=?", (user,))
+            if self.manage:
+                self.manage(slot, user, key, action, value)
+            else:
+                with self.slots.db(write=True) as db:
+                    db.execute("UPDATE cloud_slots SET user_id=NULL, wrapped=NULL WHERE user_id=?", (user,))
+            self.notified.discard(user)
+        if result.get("step") == "connected" and self.manage:
+            if action == "decision":
+                self.consent.decide(start_param, slot, user, key, value)
+            result.update(self.manage(slot, user, key, action, value))
+            result["oauth"] = self.consent.view(start_param)
+        if action == "chats" and result.get("step") == "connected":
+            self.notified.discard(user)
         return result
+
+    async def notify_revoked(self, slot, reply):
+        try:
+            result = reply.json().get("result", {})
+            if not result.get("isError") or "Сессия Telegram отозвана" not in str(result.get("content", [])):
+                return
+            with self.slots.db() as db:
+                user = db.execute("SELECT user_id FROM cloud_slots WHERE id=?", (slot,)).fetchone()[0]
+            if user and user not in self.notified:
+                async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
+                    await telegram_api(client, self.credential, "sendMessage", {"chat_id": user, "text": "Подключите Telegram заново через Mini App."})
+                self.notified.add(user)
+        except (httpx.HTTPError, ValueError):
+            pass
 
     def routes(self):
         return [Route("/app", self.page), Route("/app/api/{action}", self.api, methods=["POST"])]
