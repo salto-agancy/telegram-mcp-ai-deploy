@@ -145,6 +145,7 @@ class MiniApp:
                     })
             if action == "decision":
                 self.consent.decide(start_param, slot, user, key, value)
+                result["decision_recorded"] = value
             result.update(self.manage(slot, user, key, action, value))
             result["oauth"] = self.consent.view(start_param)
         if action == "chats" and result.get("step") == "connected":

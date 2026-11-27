@@ -95,7 +95,7 @@ def exchange(http, other, mini_call, client):
     approval = mini_call(http, "status", start=flow).json()["oauth"]
     assert approval["domain"] == "client.example"
     assert approval["code"] in response.text
-    assert mini_call(http, "decision", True, flow).status_code == 200
+    assert mini_call(http, "decision", True, flow).json()["decision_recorded"] is True
     result = http.get(poll)
     assert result.status_code == 303
     code = parse_qs(urlsplit(result.headers["location"]).query)["code"][0]
@@ -129,6 +129,19 @@ def test_dcr_browser_binding_and_refresh_restart(community, method):
         assert retried.status_code == 200
         assert restarted.post("/mcp", headers={"Authorization": "Bearer " + retried.json()["access_token"]}).status_code == 200
         assert restarted.post("/token", data=refresh).status_code == 400
+
+
+def test_decline_returns_to_original_client(community):
+    create_app, mini_call, _ = community
+    with TestClient(create_app(), base_url=ISSUER, follow_redirects=False) as http:
+        params, _ = oauth_request(register(http, "none"))
+        response = http.get("/authorize", params={**params, "state": "decline-test"})
+        flow = re.search(r"startapp=([A-Za-z0-9_-]+)", response.text)[1]
+        assert mini_call(http, "decision", False, flow).json()["decision_recorded"] is False
+        result = http.get(f"/authorize/status/{flow}")
+        assert result.status_code == 303
+        location = urlsplit(result.headers["location"])
+        assert parse_qs(location.query) == {"state": ["decline-test"], "error": ["access_denied"]}
 
 
 def test_api_key_and_delete_everything(community, monkeypatch):

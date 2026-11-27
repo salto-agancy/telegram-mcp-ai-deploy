@@ -39,7 +39,7 @@ class Consent:
             f'<meta http-equiv=refresh content="2;url=/authorize/status/{rid}">'
             f'<h1>{escape(data["domain"])}</h1><p>Код подтверждения <strong>{data["code"]}</strong></p>'
             f'<a href="https://t.me/{escape(self.username)}?startapp={rid}">Подтвердить в Telegram</a>'
-            '<p>Сверьте домен и код. После подтверждения это окно вернёт вас в приложение.</p>',
+            '<p>Сверьте домен и три цифры в Telegram. Затем вернитесь в это окно, чтобы завершить подключение.</p>',
             headers={**NO_STORE, "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"},
         )
 

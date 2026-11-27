@@ -7,7 +7,7 @@
 body { margin: 20px; font: 16px system-ui; color: var(--tg-theme-text-color, #202124); background: var(--tg-theme-bg-color, #fff); }
 input, button { padding: 10px; margin: 6px 4px 6px 0; font: inherit; }
 label { display: block; } label[hidden] { display: none; }
-#messages { color: var(--tg-theme-destructive-text-color, #a32322); }
+#messages { color: var(--tg-theme-text-color, #202124); }
 </style>
 <h1>Telegram MCP</h1>
 <p id="messages" role="status"></p>
@@ -30,14 +30,34 @@ function storage(method, ...args) {
   return new Promise((resolve, reject) => app.CloudStorage[method](...args, (error, value) => error ? reject(error) : resolve(value)));
 }
 async function api(action, value) {
-  messages.textContent = '';
+  const decision = action === 'decision';
+  if (decision && panel.inert) return;
+  if (decision) panel.inert = true;
+  messages.textContent = decision ? 'Отправляем ваш ответ…' : '';
   try {
     const response = await fetch('/app/api/' + action, {method:'POST', headers:{'Content-Type':'application/json','X-Cloud-Nonce':nonce}, body:JSON.stringify({proof,value})});
     const data = await response.json();
     if (data.error) messages.textContent = data.error;
+    if (decision && response.ok && data.decision_recorded === value) {
+      panel.replaceChildren();
+      messages.textContent = value ? 'Вы разрешили доступ.' : 'Вы отклонили запрос.';
+      show('p', 'Вернитесь в окно, где начали подключение. Оно передаст ваш ответ приложению.');
+      button('Закрыть Mini App', () => app.close());
+      return;
+    }
+    if (decision && !data.error) {
+      messages.textContent = 'Подтверждение не получено. Проверьте окно, где начали подключение.';
+      return;
+    }
     if (response.ok && data.step) render(data);
     if (!response.ok && !data.error) throw Error();
-  } catch { messages.textContent = 'Не удалось связаться с сервисом. Повторите позже.'; }
+  } catch {
+    messages.textContent = decision
+      ? 'Подтверждение не получено. Проверьте окно, где начали подключение.'
+      : 'Не удалось связаться с сервисом. Повторите позже.';
+  } finally {
+    if (decision) panel.inert = false;
+  }
 }
 function render(data) {
   panel.replaceChildren();
