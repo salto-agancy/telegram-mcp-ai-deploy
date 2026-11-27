@@ -82,6 +82,8 @@ class MiniApp:
             data = await request.json()
             slot = self.slots.lookup(user)["id"]
             async with self.locks[slot]:
+                if self.slots.lookup(user)["id"] != slot:
+                    raise ValueError
                 key = self.key(user, data["proof"])
                 result = await self.action(slot, key, user, start_param, action, data.get("value"))
         except (ValueError, KeyError, TypeError, InvalidTag):

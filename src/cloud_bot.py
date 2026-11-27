@@ -58,6 +58,14 @@ async def message(bot, slots, owner, username, issuer, update):
     await bot("sendMessage", {"chat_id": user, "text": text, **({"reply_markup": buttons} if buttons else {})})
 
 
+async def healthy(client):
+    try:
+        response = await client.get("http://cloud-oauth:8001/.well-known/oauth-authorization-server", timeout=2)
+        return response.status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
 async def main():
     credential = _secret("CLOUD_BOT_TOKEN")
     owner = int(os.environ["OWNER_TELEGRAM_ID"])
@@ -71,14 +79,14 @@ async def main():
         while True:
             try:
                 updates = await bot("getUpdates", {"offset": offset, "timeout": 25, "allowed_updates": ["message"]})
-                if failed:
-                    await bot("sendMessage", {"chat_id": owner, "text": "Облачный сервис Telegram восстановился после сбоя."})
-                    failed = False
+                down = not await healthy(client)
+                notify, failed = down and not failed, down
+                if notify:
+                    await bot("sendMessage", {"chat_id": owner, "text": "Облачный сервис Telegram недоступен. Проверьте фасад."})
                 for update in updates:
                     offset = update["update_id"] + 1
                     await message(bot, slots, owner, username, issuer, update)
             except (httpx.HTTPError, ValueError):
-                failed = True
                 await asyncio.sleep(3)
 
 

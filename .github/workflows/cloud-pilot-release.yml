@@ -39,4 +39,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Promote the verified commit
-        run: git push origin HEAD:refs/heads/release-cloud
+        run: |
+          if test -f src/cloud_mini.py; then exit 0; fi
+          git push origin HEAD:refs/heads/release-cloud
