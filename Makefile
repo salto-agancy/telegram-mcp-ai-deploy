@@ -1,7 +1,7 @@
 UV ?= uv
 PYTEST := $(UV) run pytest
 
-.PHONY: setup lint test test-security test-installer security check docker-validate deploy update
+.PHONY: setup lint test test-security test-installer security check docker-validate deploy update cloud-smoke
 
 setup:
 	$(UV) sync --frozen
@@ -36,3 +36,6 @@ deploy:
 
 update:
 	./scripts/update.sh
+
+cloud-smoke:
+	bash scripts/cloud_smoke.sh

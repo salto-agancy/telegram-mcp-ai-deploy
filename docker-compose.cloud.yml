@@ -5,7 +5,8 @@ x-common: &common
   init: true
   restart: unless-stopped
   read_only: true
-  tmpfs: [/tmp:rw,noexec,nosuid,size=64m]
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=64m
   cap_drop: [ALL]
   security_opt: [no-new-privileges:true]
   logging:

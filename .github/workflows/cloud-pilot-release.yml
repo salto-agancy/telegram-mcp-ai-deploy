@@ -25,18 +25,8 @@ jobs:
       - run: uv sync --frozen
       - run: make check
       - run: bash -n scripts/cloud_auto_update.sh
-      - name: Validate pilot Compose and image
-        env:
-          CLOUD_IMAGE_TAG: ci
-          CLOUD_PUBLIC_BASE_URL: https://pilot.example
-          CLOUD_REDIRECT_URIS: https://client.example/callback
-          CLOUD_BIND_PORT: 18001
-          CLOUD_TRUSTED_PROXY_IP: 127.0.0.1
-          CLOUD_SECRET_DIR: /tmp/pilot-ci
-          TELEGRAM_API_ID: 1
-        run: |
-          docker compose -f docker-compose.cloud.yml config --quiet
-          docker compose -f docker-compose.cloud.yml build cloud-oauth
+      - name: Start and probe the pilot Compose project
+        run: make cloud-smoke
       - name: Scan full history with Gitleaks
         run: >-
           docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.30.1
