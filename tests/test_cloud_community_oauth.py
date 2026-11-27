@@ -94,6 +94,7 @@ def exchange(http, other, mini_call, client):
     assert http.get("/authorize", params={**params, "resource": ISSUER + "/mcp//"}).status_code == 400
     response = http.get("/authorize", params=params)
     assert response.status_code == 200
+    assert "Это не код входа в Telegram" in response.text
     flow = re.search(r"startapp=([A-Za-z0-9_-]+)", response.text)[1]
     poll = f"/authorize/status/{flow}"
     assert other.get(poll).status_code == 403
@@ -213,7 +214,10 @@ async def test_cimd_internal_addresses_are_not_dialled(monkeypatch):
 def test_removed_login_paths(community):
     create_app, _, _ = community
     with TestClient(create_app(), base_url=ISSUER) as http:
-        assert "requestContact" not in http.get("/app").text
+        page = http.get("/app").text
+        assert "requestContact" not in page
+        assert "Это не код входа в Telegram" in page
+        assert "Сравните число" in page
         for action in ("phone", "code", "password"):
             assert http.post(f"/app/api/{action}", content=b"invalid").status_code == 410
         assert http.get("/setup").status_code == 410

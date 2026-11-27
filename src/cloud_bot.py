@@ -36,7 +36,9 @@ async def message(bot, slots, owner, username, issuer, update):
         with slots.db(write=True) as db:
             db.execute("DELETE FROM cloud_invites WHERE expires<=?", (time.time(),))
             db.execute("INSERT INTO cloud_invites VALUES (?,?)", (digest(code), time.time() + 7 * 86400))
-        text = f"Одноразовое приглашение на 7 дней.\nhttps://t.me/{username}?start={code}"
+        text = ("Одноразовое приглашение на 7 дней. Оно занимает одно свободное место. "
+                "После первого входа человеку новая ссылка не нужна.\n"
+                f"https://t.me/{username}?start={code}")
     elif command == "/start":
         text = f"Нет приглашения. Ваш ID: {user}"
         slot = slots.lookup(user)
@@ -51,7 +53,8 @@ async def message(bot, slots, owner, username, issuer, update):
                     else:
                         text = "Свободных мест пока нет. Попробуйте позже."
         if slot:
-            text = "Ваше место в пилоте сохранено. Откройте Mini App, чтобы проверить доступ к чатам."
+            text = ("Ваше место в пилоте сохранено. Приглашение больше не понадобится. "
+                    "Откройте Mini App, чтобы подтвердить подключение или проверить доступ к чатам.")
             buttons = {"inline_keyboard": [[{"text": "Открыть Mini App", "web_app": {"url": issuer + "/app"}}]]}
     else:
         return

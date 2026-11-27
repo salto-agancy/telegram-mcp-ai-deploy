@@ -82,11 +82,12 @@ function render(data) {
   } else if (data.step === 'connected' || data.step === 'login_closed') {
     const linked = data.step === 'connected';
     if (data.oauth) {
-      heading(linked ? 'Разрешить чтение?' : 'Подключить коннектор?');
+      heading(linked ? 'Разрешить чтение?' : 'Подключить MCP?');
       show('p', data.oauth.domain + (linked ? ' запрашивает доступ к выбранным вами чатам.' :
         ' сможет читать только те чаты, которые вы позже подключите и разрешите. Сейчас список пуст.'));
-      show('p', 'Сверьте три цифры с исходным окном.');
+      show('p', 'Сравните число ниже с числом в окне подключения. Они должны совпадать.');
       show('p', data.oauth.code, {className:'challenge'});
+      show('p', 'Это не код входа в Telegram. Вводить его никуда не нужно.');
       button(linked ? 'Разрешить' : 'Подключить', () => api('decision', true)).className = 'primary';
       button('Отклонить', () => api('decision', false));
       return;

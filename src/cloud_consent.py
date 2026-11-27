@@ -42,9 +42,11 @@ class Consent:
             'font:17px/1.45 system-ui}main{max-width:420px;margin:6vh auto}h1{font-size:32px;line-height:1.1}'
             'strong{font:600 38px ui-monospace,monospace;letter-spacing:.15em}a{display:block;background:#1460cc;'
             'color:white;border-radius:14px;padding:14px;text-align:center;text-decoration:none;font-weight:600}'
-            'p{overflow-wrap:anywhere}</style><main><h1>Подтвердить доступ</h1>'
-            f'<p>Приложение <b>{escape(data["domain"])}</b> запрашивает подключение к Telegram MCP.</p>'
-            f'<p>Сверьте три цифры в Telegram<br><strong>{data["code"]}</strong></p>'
+            'p{overflow-wrap:anywhere}.hint{opacity:.72}</style><main><h1>Откройте Telegram</h1>'
+            f'<p>Приложение <b>{escape(data["domain"])}</b> хочет подключиться к вашему Telegram MCP.</p>'
+            f'<p>Запомните число<br><strong>{data["code"]}</strong></p>'
+            '<p class=hint>В Telegram появится такое же число. Сравните их и подтвердите запрос. '  # noqa: RUF001
+            'Это не код входа в Telegram, вводить его не нужно.</p>'  # noqa: RUF001
             f'<a href="https://t.me/{escape(self.username)}?startapp={rid}">Открыть в Telegram</a>'
             '<p>Вернитесь в это окно после подтверждения. Запрос действует 10 минут.</p></main></html>',
             headers={**NO_STORE, "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'"},
