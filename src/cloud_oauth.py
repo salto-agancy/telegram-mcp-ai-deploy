@@ -94,6 +94,7 @@ def build_cloud_app(issuer, callbacks, routes, db_path, *, mini=None, bot_userna
         if len({r[field] for r in routes.values()}) != len(routes):
             raise ValueError("Each participant needs a distinct route and credentials")
     resource = issuer + "/mcp"
+    resource_targets = {resource, resource + "/"}
 
     @contextmanager
     def database(*, write=False):
@@ -193,7 +194,7 @@ def build_cloud_app(issuer, callbacks, routes, db_path, *, mini=None, bot_userna
                   "resource", "scope", "state"}
         if (params.keys() - fields or params.get("response_type") != "code"
             or params.get("code_challenge_method") != "S256" or not re.fullmatch(r"[A-Za-z0-9_-]{43}", challenge)
-            or params.get("resource", resource) != resource or params.get("scope", "mcp") != "mcp"):
+            or params.get("resource", resource) not in resource_targets or params.get("scope", "mcp") != "mcp"):
             raise OAuthError()
         if mini:
             if request.method != "GET" or not redirect_allowed(redirect):
@@ -398,7 +399,7 @@ def build_cloud_app(issuer, callbacks, routes, db_path, *, mini=None, bot_userna
         key, sequence = None, 0
         with database(write=True) as db:
             client = client_auth(db, data)
-            if data.get("resource", resource) != resource:
+            if data.get("resource", resource) not in resource_targets:
                 raise OAuthError("invalid_target")
             if data.get("scope", "mcp") != "mcp":
                 raise OAuthError("invalid_scope")
@@ -524,6 +525,7 @@ def build_cloud_app(issuer, callbacks, routes, db_path, *, mini=None, bot_userna
         mini.manage = manage
 
     endpoints = create_protected_resource_routes(AnyHttpUrl(resource), [AnyHttpUrl(issuer)], ["mcp"])
+    endpoints.append(Route("/.well-known/oauth-protected-resource", endpoints[0].endpoint, methods=["GET", "OPTIONS"]))
     endpoints.extend([
         Route("/.well-known/oauth-authorization-server", discovery),
         Route("/register", register, methods=["POST"]),

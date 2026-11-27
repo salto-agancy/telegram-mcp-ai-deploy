@@ -76,6 +76,8 @@ def oauth_request(client):
 
 def exchange(http, other, mini_call, client):
     params, verifier = oauth_request(client)
+    params["resource"] = ISSUER + "/mcp/"
+    assert http.get("/authorize", params={**params, "resource": ISSUER + "/mcp//"}).status_code == 400
     response = http.get("/authorize", params=params)
     assert response.status_code == 200
     flow = re.search(r"startapp=([A-Za-z0-9_-]+)", response.text)[1]
@@ -90,6 +92,8 @@ def exchange(http, other, mini_call, client):
     code = parse_qs(urlsplit(result.headers["location"]).query)["code"][0]
     assert http.get(poll).status_code == 403
     data = {**client, "grant_type": "authorization_code", "code": code, "code_verifier": verifier, "redirect_uri": CALLBACK}
+    data["resource"] = params["resource"]
+    assert http.post("/token", data={**data, "resource": ISSUER + "/mcp//"}).status_code == 400
     if "client_secret" in client:
         assert http.post("/token", data={**data, "client_secret": "incorrect"}).status_code == 401
     result = http.post("/token", data=data)
@@ -102,6 +106,10 @@ def test_dcr_browser_binding_and_refresh_restart(community, method):
     create_app, mini_call, _ = community
     app = create_app()
     with TestClient(app, base_url=ISSUER, follow_redirects=False) as http, TestClient(app, base_url=ISSUER) as other:
+        root = http.get("/.well-known/oauth-protected-resource")
+        full = http.get("/.well-known/oauth-protected-resource/mcp")
+        assert root.status_code == full.status_code == 200
+        assert root.json() == full.json()
         client = register(http, method)
         assert ("client_secret" in client) == (method == "client_secret_post")
         issued = exchange(http, other, mini_call, client)
