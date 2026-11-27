@@ -8,7 +8,7 @@
 @media (prefers-color-scheme:dark) { :root { --bg:var(--tg-theme-secondary-bg-color,#101014); --surface:var(--tg-theme-bg-color,#202025); --text:var(--tg-theme-text-color,#f4f4f7); } }
 * { box-sizing:border-box } body { margin:0; padding:24px 16px max(24px,env(safe-area-inset-bottom)); background:var(--bg); color:var(--text); font:17px/1.45 system-ui }
 article { max-width:440px; margin:4vh auto; background:var(--surface); border-radius:20px; padding:22px } h1 {font-size:30px;line-height:1.12;letter-spacing:-.035em;margin:0 0 16px}
-p {margin:12px 0;overflow-wrap:anywhere} code {overflow-wrap:anywhere} input,button {font:inherit} button,input[type=search] {width:100%;min-height:46px;border-radius:12px;border:0;padding:10px 12px;margin:5px 0}
+p {margin:12px 0;overflow-wrap:anywhere} code {overflow-wrap:anywhere} input,button {font:inherit} button,input:not([type=checkbox]) {width:100%;min-height:46px;border-radius:12px;border:0;padding:10px 12px;margin:5px 0}
 button {background:var(--bg);color:var(--text);font-weight:600} button.primary {background:var(--blue);color:var(--tg-theme-button-text-color,#fff)}
 button:active {opacity:.75} :focus-visible {outline:2px solid var(--blue);outline-offset:2px} label {display:block;padding:10px 0} label[hidden],[hidden] {display:none}
 .challenge {font:600 36px ui-monospace,monospace;letter-spacing:.16em}
@@ -66,7 +66,34 @@ async function api(action, value) {
 }
 function render(data) {
   panel.replaceChildren();
-  if (data.step === 'chats') {
+  if (data.step === 'phone' || data.step === 'code' || data.step === 'password') {
+    const copy = {
+      phone: ['Подключить Telegram', 'Поделитесь номером аккаунта, в котором открыт этот бот.', 'Номер Telegram в формате +…'],
+      code: ['Код из Telegram', 'Закройте Mini App, прочитайте код в Telegram и снова откройте Mini App из бота. Этот шаг сохранится 5 минут.', 'Код из Telegram'],
+      password: ['Пароль Telegram', 'Введите пароль двухэтапной проверки. Он используется только для входа и не сохраняется.', 'Пароль двухэтапной проверки']
+    }[data.step];
+    heading(copy[0]);
+    show('p', copy[1]);
+    const field = show('input', '', {
+      type: data.step === 'phone' ? 'tel' : data.step === 'password' ? 'password' : 'text',
+      inputMode: data.step === 'code' ? 'numeric' : undefined,
+      autocomplete: 'off', placeholder: copy[2], ariaLabel: copy[2]
+    });
+    if (data.step === 'phone' && app.isVersionAtLeast?.('6.9')) {
+      button('Поделиться номером', () => app.requestContact((shared, info) => {
+        const number = info?.responseUnsafe?.contact?.phone_number;
+        if (shared && number) api('phone', '+' + number.replace(/\D/g, ''));
+        else messages.textContent = 'Введите номер вручную.';
+      })).className = 'primary';
+    }
+    button(data.step === 'phone' ? 'Продолжить' : 'Подтвердить', () => {
+      const value = data.step === 'password' ? field.value : field.value.trim();
+      field.value = '';
+      api(data.step, value);
+    }).className = data.step === 'phone' ? '' : 'primary';
+    if (data.step === 'code') button('Закрыть и посмотреть код', () => app.close());
+    show('p', 'Номер, код и пароль не записываются на диск и не попадают в логи. Незавершённый вход удаляется через 5 минут.');
+  } else if (data.step === 'chats') {
     heading('Выберите чаты');
     const filter = show('input', '', {type:'search', placeholder:'Поиск чатов', ariaLabel:'Поиск чатов'});
     const list = show('div', '');

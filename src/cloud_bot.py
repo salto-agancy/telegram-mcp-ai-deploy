@@ -23,7 +23,7 @@ async def telegram_api(client, credential, method, payload):
     return data["result"]
 
 
-async def message(bot, slots, owner, username, issuer, update):
+async def message(bot, slots, owner, username, app_origin, mcp_url, update):
     msg = update.get("message", {})
     chat, user = msg.get("chat", {}), msg.get("from", {}).get("id")
     if chat.get("type") != "private" or chat.get("id") != user:
@@ -54,8 +54,9 @@ async def message(bot, slots, owner, username, issuer, update):
                         text = "Свободных мест пока нет. Попробуйте позже."
         if slot:
             text = ("Ваше место в пилоте сохранено. Приглашение больше не понадобится. "
-                    "Откройте Mini App, чтобы подтвердить подключение или проверить доступ к чатам.")
-            buttons = {"inline_keyboard": [[{"text": "Открыть Mini App", "web_app": {"url": issuer + "/app"}}]]}
+                    "Добавьте адрес ниже как удалённый MCP, затем подтвердите подключение через Telegram.\n\n"
+                    f"{mcp_url}")
+            buttons = {"inline_keyboard": [[{"text": "Подключить Telegram", "web_app": {"url": app_origin + "/app"}}]]}
     else:
         return
     await bot("sendMessage", {"chat_id": user, "text": text, **({"reply_markup": buttons} if buttons else {})})
@@ -72,7 +73,9 @@ async def healthy(client):
 async def main():
     credential = _secret("CLOUD_BOT_TOKEN")
     owner = int(os.environ["OWNER_TELEGRAM_ID"])
-    username, issuer = os.environ["CLOUD_BOT_USERNAME"], (os.getenv("CLOUD_HUMAN_URL") or os.environ["PUBLIC_BASE_URL"]).rstrip("/")
+    username = os.environ["CLOUD_BOT_USERNAME"]
+    mcp_origin = os.environ["PUBLIC_BASE_URL"].rstrip("/")
+    app_origin = (os.getenv("CLOUD_HUMAN_URL") or mcp_origin).rstrip("/")
     slots = Slots(os.environ["OAUTH_DB_PATH"], slot_count())
     offset, failed = 0, False
     async with httpx.AsyncClient(timeout=35, trust_env=False) as client:
@@ -88,7 +91,7 @@ async def main():
                     await bot("sendMessage", {"chat_id": owner, "text": "Облачный сервис Telegram недоступен. Проверьте фасад."})
                 for update in updates:
                     offset = update["update_id"] + 1
-                    await message(bot, slots, owner, username, issuer, update)
+                    await message(bot, slots, owner, username, app_origin, mcp_origin + "/mcp", update)
             except (httpx.HTTPError, ValueError):
                 await asyncio.sleep(3)
 

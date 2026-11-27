@@ -100,8 +100,6 @@ class MiniApp:
 
     async def api(self, request):
         action = request.path_params["action"]
-        if action in {"phone", "code", "password"}:
-            return JSONResponse({"error": "Этот способ входа отключён."}, status_code=410, headers=NO_STORE)
         try:
             if request.headers.get("origin") not in (self.issuer, self.human_origin):
                 raise ValueError
@@ -130,7 +128,7 @@ class MiniApp:
 
     async def action(self, slot, key, user, start_param, action, value):
         management = {"api_key", "detach", "decision"}
-        if action not in {"status", "chats", "edit", "delete"} | management:
+        if action not in {"status", "phone", "code", "password", "chats", "edit", "delete"} | management:
             raise ValueError
         reply = await self.call(slot, key, "/setup", {"action": "status" if action in management else action, "user_id": user, "value": value})
         result = reply.json()
@@ -142,9 +140,9 @@ class MiniApp:
                     db.execute("UPDATE cloud_slots SET user_id=NULL, wrapped=NULL WHERE user_id=?", (user,))
                     self.slots.clear_launches(db, user)
             self.notified.discard(user)
-        if result.get("step") == "login_closed" and action == "api_key":
+        if result.get("step") != "connected" and action == "api_key":
             raise ValueError
-        if result.get("step") in {"connected", "login_closed"} and self.manage:
+        if result.get("step") in {"connected", "phone", "code", "password", "chats"} and self.manage:
             if action == "api_key":
                 value = "tgcloud_" + secrets.token_urlsafe(32)
                 async with httpx.AsyncClient(timeout=5, trust_env=False) as client:

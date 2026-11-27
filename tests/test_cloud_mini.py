@@ -1,12 +1,15 @@
 import hmac
 import json
 import secrets
+from types import SimpleNamespace
 from urllib.parse import urlencode
 
 import pytest
 
+from src.cloud_bot import message
 from src.cloud_mini import telegram_identity
 from src.cloud_slot_backend import SlotTelegram
+from src.cloud_slots import Slots
 
 
 def signed(credential, timestamp):
@@ -29,13 +32,85 @@ def test_bad_and_expired_init_data():
 
 
 @pytest.mark.asyncio
-async def test_slot_has_no_credential_entry(tmp_path):
+async def test_bot_sends_machine_url_and_human_button(tmp_path):
+    slots = Slots(tmp_path / "slots.sqlite3", 1)
+    with slots.db(write=True) as db:
+        assert slots.claim(db, 123) == 1
+    sent = []
+
+    async def bot(method, payload):
+        sent.append((method, payload))
+
+    await message(bot, slots, 999, "test_bot", "https://login.example",
+                  "https://mcp.example/mcp", {"message": {
+                      "chat": {"type": "private", "id": 123},
+                      "from": {"id": 123}, "text": "/start",
+                  }})
+    method, payload = sent.pop()
+    assert method == "sendMessage"
+    assert "https://mcp.example/mcp" in payload["text"]
+    button = payload["reply_markup"]["inline_keyboard"][0][0]
+    assert button["web_app"]["url"] == "https://login.example/app"
+
+
+@pytest.mark.asyncio
+async def test_login_resumes_without_writing_credentials(tmp_path):
     telegram = SlotTelegram(tmp_path / "session.aes", 1)
     key = secrets.token_bytes(32)
-    assert await telegram.configure(key, 123, "status", None) == {"step": "login_closed"}
-    for action in ("phone", "code", "password"):
-        with pytest.raises(ValueError):
-            await telegram.configure(key, 123, action, None)
+    phone = "+" + "1" * 12
+    client = SimpleNamespace(
+        connect=lambda: None,
+        disconnect=lambda: None,
+    )
+
+    async def connect():
+        pass
+
+    async def disconnect():
+        pass
+
+    async def send_code_request(phone):
+        assert phone == "+" + "1" * 12
+        return SimpleNamespace(phone_code_hash="fixture")
+
+    client.connect = connect
+    client.disconnect = disconnect
+    client.send_code_request = send_code_request
+    telegram.client = lambda *args: client
+    assert await telegram.configure(key, 123, "status", None) == {"step": "phone"}
+    assert await telegram.configure(key, 123, "phone", phone) == {"step": "code"}
+    assert await telegram.configure(key, 123, "status", None) == {"step": "code"}
+    assert not telegram.encrypted.path.exists()
+    telegram.expire(telegram.pending)
+    assert telegram.pending is None
+
+
+@pytest.mark.asyncio
+async def test_telegram_account_must_match(tmp_path):
+    telegram = SlotTelegram(tmp_path / "session.aes", 1)
+    calls = []
+
+    class FakeClient:
+        async def connect(self):
+            pass
+
+        async def disconnect(self):
+            pass
+
+        async def sign_in(self, **data):
+            pass
+
+        async def get_me(self):
+            return SimpleNamespace(id=456)
+
+        async def log_out(self):
+            calls.append("logout")
+
+    telegram.pending = {"user": 123, "client": FakeClient(), "step": "code",
+                        "phone": "fixture", "phone_hash": "fixture"}
+    result = await telegram.configure(secrets.token_bytes(32), 123, "code", "12345")
+    assert result["step"] == "phone"
+    assert calls == ["logout"]
     assert telegram.pending is None
     assert not telegram.encrypted.path.exists()
 

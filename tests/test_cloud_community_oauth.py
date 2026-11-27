@@ -215,11 +215,10 @@ def test_removed_login_paths(community):
     create_app, _, _ = community
     with TestClient(create_app(), base_url=ISSUER) as http:
         page = http.get("/app").text
-        assert "requestContact" not in page
+        assert "requestContact" in page
+        assert "не записываются на диск" in page
         assert "Это не код входа в Telegram" in page
         assert "Сравните число" in page
-        for action in ("phone", "code", "password"):
-            assert http.post(f"/app/api/{action}", content=b"invalid").status_code == 410
         assert http.get("/setup").status_code == 410
         assert http.post("/setup", content=b"invalid").status_code == 410
 
@@ -227,7 +226,7 @@ def test_connector_before_telegram_login(community, tmp_path):
     create_app, mini_call, _ = community
     slot = SlotTelegram(tmp_path / "absent.aes", 1)
     with TestClient(slot_backend(slot)) as backend:
-        app = create_app("login_closed", backend)
+        app = create_app("phone", backend)
         with TestClient(app, base_url=ISSUER, follow_redirects=False) as http, TestClient(app, base_url=ISSUER) as other:
             tokens = exchange(http, other, mini_call, register(http, "none"))
             headers = {"Authorization": "Bearer " + tokens["access_token"], "Accept": "application/json, text/event-stream"}
@@ -243,7 +242,7 @@ def test_connector_before_telegram_login(community, tmp_path):
             assert rpc("tools/call", name="get_messages", arguments={"chat_id": 42, "query": "example"})["isError"]
             assert not slot.encrypted.path.exists()
             dashboard = mini_call(http, "status").json()
-            assert dashboard["step"] == "login_closed"
+            assert dashboard["step"] == "phone"
             grant, = dashboard["connections"]
             assert not mini_call(http, "detach", grant["id"]).json()["connections"]
             assert http.post("/mcp", headers=headers).status_code == 401
