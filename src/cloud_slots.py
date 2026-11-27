@@ -19,6 +19,7 @@ class Slots:
             db.execute("""CREATE TABLE IF NOT EXISTS cloud_slots (
                 id INTEGER PRIMARY KEY, user_id INTEGER UNIQUE, wrapped BLOB
             )""")
+            db.execute("CREATE TABLE IF NOT EXISTS cloud_invites (digest TEXT PRIMARY KEY, expires INTEGER)")
             if db.execute("SELECT 1 FROM cloud_slots WHERE id>? AND user_id IS NOT NULL", (count,)).fetchone():
                 raise ValueError("Cannot remove a slot that is in use")
             db.executemany("INSERT OR IGNORE INTO cloud_slots(id) VALUES (?)", ((i,) for i in range(1, count + 1)))

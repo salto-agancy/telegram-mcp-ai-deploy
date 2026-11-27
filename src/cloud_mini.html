@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Telegram MCP</title>
+<style>
+body { margin: 20px; font: 16px system-ui; color: var(--tg-theme-text-color, #202124); background: var(--tg-theme-bg-color, #fff); }
+input, button { padding: 10px; margin: 6px 4px 6px 0; font: inherit; }
+label { display: block; } label[hidden] { display: none; }
+#messages { color: var(--tg-theme-destructive-text-color, #a32322); }
+</style>
+<h1>Telegram MCP</h1>
+<p id="messages" role="status"></p>
+<main id="panel"></main>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script>
+const app = window.Telegram?.WebApp;
+const panel = document.querySelector('#panel');
+const messages = document.querySelector('#messages');
+let proof;
+function show(tag, text, attrs={}, parent=panel) {
+  const el = document.createElement(tag);
+  el.textContent = text;
+  Object.assign(el, attrs);
+  parent.append(el);
+  return el;
+}
+function button(text, onclick) { return show('button', text, {onclick}); }
+function storage(method, ...args) {
+  return new Promise((resolve, reject) => app.CloudStorage[method](...args, (error, value) => error ? reject(error) : resolve(value)));
+}
+async function api(action, value) {
+  messages.textContent = '';
+  try {
+    const response = await fetch('/app/api/' + action, {method:'POST', headers:{'Content-Type':'application/json','X-Telegram-Init-Data':app.initData}, body:JSON.stringify({proof,value})});
+    const data = await response.json();
+    if (data.error) messages.textContent = data.error;
+    if (response.ok && data.step) render(data);
+    if (!response.ok && !data.error) throw Error();
+  } catch { messages.textContent = 'Не удалось связаться с сервисом. Повторите позже.'; }
+}
+function render(data) {
+  panel.replaceChildren();
+  if (data.step === 'phone' || data.step === 'code' || data.step === 'password') {
+    const names = {phone:'Номер Telegram в формате +…', code:'Код из приложения Telegram', password:'Пароль двухэтапной проверки'};
+    const field = show('input', '', {type: data.step === 'phone' ? 'tel' : data.step === 'password' ? 'password' : 'text', autocomplete:'off', placeholder:names[data.step], ariaLabel:names[data.step]});
+    if (data.step === 'phone' && app.isVersionAtLeast('6.9')) {
+      button('Поделиться номером', () => app.requestContact((shared, info) => {
+        const number = info?.responseUnsafe?.contact?.phone_number;
+        if (shared && number) api('phone', '+' + number.replace(/\D/g, ''));
+        else messages.textContent = 'Введите номер вручную.';
+      }));
+    }
+    button('Продолжить', () => { const value=data.step === 'password' ? field.value : field.value.trim(); field.value=''; api(data.step,value); });
+    if (data.step !== 'phone') button('Другой номер', () => render({step:'phone'}));
+  } else if (data.step === 'chats') {
+    const filter = show('input', '', {type:'search', placeholder:'Поиск чатов', ariaLabel:'Поиск чатов'});
+    const list = show('div', '');
+    const inputs = data.choices.map(([id,title]) => {
+      const row = show('label', '', {}, list);
+      const box = show('input', '', {type:'checkbox', value:id, checked:data.selected?.includes(id) ?? false}, row);
+      row.append(title);
+      return [row, box, title.toLocaleLowerCase()];
+    });
+    filter.oninput = () => { for (const [row,,title] of inputs) row.hidden = !title.includes(filter.value.toLocaleLowerCase()); };
+    show('p','Сообщения проходят через сервер владельца и выбранный вами ИИ-сервис. Переписки не сохраняются. Подключение на ваш риск. Отключить можно в любой момент');
+    button('Разрешить чтение выбранных чатов', () => api('chats', inputs.filter(([,box])=>box.checked).map(([,box])=>box.value)));
+  } else if (data.step === 'connected') {
+    show('p', 'Telegram подключён');
+    show('code', data.mcp_url);
+    button('Скопировать', async () => {
+      try { await navigator.clipboard.writeText(data.mcp_url); messages.textContent = 'URL скопирован.'; }
+      catch { messages.textContent = 'Выделите адрес и скопируйте вручную.'; }
+    });
+    button('Изменить чаты', () => api('edit'));
+    button('Подключить заново', () => render({step:'phone'}));
+    button('Удалить всё', () => { if (confirm('Отключить Telegram и освободить место?')) api('delete'); });
+  } else if (data.step === 'deleted') {
+    storage('removeItem', 'cloud-unlock-v1').then(() => { proof=undefined; }).catch(() => {});
+    show('p', 'Сессия удалена. Для подключения нужно новое приглашение.');
+  }
+}
+(async () => {
+  if (!app?.initData) throw Error();
+  app.ready();
+  proof = await storage('getItem', 'cloud-unlock-v1');
+  if (!proof) {
+    proof = Array.from(crypto.getRandomValues(new Uint8Array(32)), n=>n.toString(16).padStart(2,'0')).join('');
+    await storage('setItem', 'cloud-unlock-v1', proof);
+  }
+  await api('status');
+})().catch(() => { messages.textContent = 'Откройте приложение из бота в актуальной версии Telegram.'; });
+</script>
+</html>
