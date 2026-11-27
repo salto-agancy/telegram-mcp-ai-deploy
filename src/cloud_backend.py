@@ -64,8 +64,11 @@ def fixture_backend(allowed_chat: int | None, telegram=None):
 
 if __name__ == "__main__":
     path = os.environ.get("CLOUD_SESSION_PATH")
-    telegram = TelegramChat(path) if path else None
-    serve(
-        fixture_backend(None if telegram else int(os.environ["FIXTURE_CHAT_ID"]), telegram),
-        internal_bearer=_secret("CLOUD_BACKEND_BEARER"),
-    )
+    if slot := os.environ.get("CLOUD_SLOT"):
+        from src.cloud_slot_backend import SlotTelegram, slot_backend
+
+        app = slot_backend(SlotTelegram(path, slot))
+    else:
+        telegram = TelegramChat(path) if path else None
+        app = fixture_backend(None if telegram else int(os.environ["FIXTURE_CHAT_ID"]), telegram)
+    serve(app, internal_bearer=_secret("CLOUD_BACKEND_BEARER"))
