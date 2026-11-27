@@ -43,10 +43,10 @@ class Consent:
             'strong{font:600 38px ui-monospace,monospace;letter-spacing:.15em}a{display:block;background:#1460cc;'
             'color:white;border-radius:14px;padding:14px;text-align:center;text-decoration:none;font-weight:600}'
             'p{overflow-wrap:anywhere}</style><main><h1>Подтвердить доступ</h1>'
-            f'<p>Приложение <b>{escape(data["domain"])}</b> запрашивает чтение выбранных чатов.</p>'
+            f'<p>Приложение <b>{escape(data["domain"])}</b> запрашивает подключение к Telegram MCP.</p>'
             f'<p>Сверьте три цифры в Telegram<br><strong>{data["code"]}</strong></p>'
             f'<a href="https://t.me/{escape(self.username)}?startapp={rid}">Открыть в Telegram</a>'
-            '<p>Затем вернитесь в это окно. Оно проверит ответ автоматически.</p></main></html>',
+            '<p>Вернитесь в это окно после подтверждения. Запрос действует 10 минут.</p></main></html>',
             headers={**NO_STORE, "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'"},
         )
 

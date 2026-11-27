@@ -14,6 +14,7 @@ from src import cloud_cimd
 from src.cloud_mini import MiniApp
 from src.cloud_oauth import build_cloud_app
 from src.cloud_secure import decode, encode
+from src.cloud_slot_backend import SlotTelegram, slot_backend
 from src.cloud_slots import Slots
 
 ISSUER = "https://pilot.example"
@@ -23,7 +24,7 @@ CALLBACK = "https://client.example/callback"
 class StubMini(MiniApp):
     async def call(self, slot, key, path, payload, headers=None):
         assert slot == 1 and key == self.expected_key and path == "/setup"
-        step = "deleted" if payload["action"] == "delete" else "connected"
+        step = "deleted" if payload["action"] == "delete" else self.slot_step
         return httpx.Response(200, json={"step": step})
 
 
@@ -37,12 +38,16 @@ def community(tmp_path, monkeypatch):
         slots.claim(db, 123)
     original_client = httpx.AsyncClient
 
-    def create_app():
-        mini = StubMini(ISSUER, credential, slots, {1: routes["1"]})
+    def create_app(slot_step="connected", live_backend=None, human_origin=None):
+        mini = StubMini(ISSUER, credential, slots, {1: routes["1"]}, human_origin)
+        mini.slot_step = slot_step
         mini.expected_key = mini.key(123, proof)
 
         def backend(request):
             assert decode(request.headers["x-cloud-session-key"]) == mini.expected_key
+            if live_backend is not None:
+                reply = live_backend.post(request.url.path, content=request.content, headers=request.headers)
+                return httpx.Response(reply.status_code, content=reply.content, headers=reply.headers)
             return httpx.Response(200, json={"result": {}})
 
         monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: original_client(transport=httpx.MockTransport(backend)))
@@ -213,3 +218,38 @@ def test_removed_login_paths(community):
             assert http.post(f"/app/api/{action}", content=b"invalid").status_code == 410
         assert http.get("/setup").status_code == 410
         assert http.post("/setup", content=b"invalid").status_code == 410
+
+def test_connector_before_telegram_login(community, tmp_path):
+    create_app, mini_call, _ = community
+    slot = SlotTelegram(tmp_path / "absent.aes", 1)
+    with TestClient(slot_backend(slot)) as backend:
+        app = create_app("login_closed", backend)
+        with TestClient(app, base_url=ISSUER, follow_redirects=False) as http, TestClient(app, base_url=ISSUER) as other:
+            tokens = exchange(http, other, mini_call, register(http, "none"))
+            headers = {"Authorization": "Bearer " + tokens["access_token"], "Accept": "application/json, text/event-stream"}
+
+            def rpc(method, **params):
+                response = http.post("/mcp", headers=headers, json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+                assert response.status_code == 200
+                return response.json()["result"]
+
+            assert rpc("initialize", protocolVersion="2025-06-18", capabilities={}, clientInfo={"name":"test","version":"1"})["serverInfo"]
+            assert {t["name"] for t in rpc("tools/list")["tools"]} == {"list_chats", "get_messages"}
+            assert rpc("tools/call", name="list_chats", arguments={})["structuredContent"] == {"chats": []}
+            assert rpc("tools/call", name="get_messages", arguments={"chat_id": 42, "query": "example"})["isError"]
+            assert not slot.encrypted.path.exists()
+            dashboard = mini_call(http, "status").json()
+            assert dashboard["step"] == "login_closed"
+            grant, = dashboard["connections"]
+            assert not mini_call(http, "detach", grant["id"]).json()["connections"]
+            assert http.post("/mcp", headers=headers).status_code == 401
+
+def test_human_origin_is_separate_from_machine_endpoints(community):
+    create_app, _, _ = community
+    human = "https://login.example"
+    with TestClient(create_app(human_origin=human), base_url=ISSUER) as http:
+        metadata = http.get("/.well-known/oauth-authorization-server").json()
+        assert metadata["authorization_endpoint"] == human + "/authorize"
+        for field in ("token_endpoint", "registration_endpoint", "revocation_endpoint"):
+            assert metadata[field].startswith(ISSUER + "/")
+        assert http.post("/app/api/session", headers={"origin": "https://other.example"}).status_code == 403

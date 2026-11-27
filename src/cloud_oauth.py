@@ -136,6 +136,8 @@ def build_cloud_app(issuer, callbacks, routes, db_path, *, mini=None, bot_userna
     metadata = build_metadata(AnyHttpUrl(issuer), None,
                               ClientRegistrationOptions(enabled=True, valid_scopes=["mcp"]),
                               RevocationOptions(enabled=True)).model_dump(mode="json", exclude_none=True)
+    if mini:
+        metadata["authorization_endpoint"] = mini.human_origin + "/authorize"
     auth_methods = ["client_secret_post"]
     if mini or perplexity_callbacks:
         auth_methods.append("none")
@@ -553,5 +555,5 @@ if __name__ == "__main__":
     routes = json.loads(_secret("CLOUD_ROUTES"))
     bot = os.getenv("CLOUD_BOT_USERNAME")
     mini = MiniApp(issuer, _secret("CLOUD_BOT_TOKEN"), Slots(path, slot_count()),
-                  {int(slot): route for slot, route in routes.items()}) if bot else None
+                  {int(slot): route for slot, route in routes.items()}, os.getenv("CLOUD_HUMAN_URL")) if bot else None
     serve(build_cloud_app(issuer, callbacks, routes, path, mini=mini, bot_username=bot))

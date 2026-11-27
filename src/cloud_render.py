@@ -21,6 +21,7 @@ def render(target, secret_dir):
     oauth["environment"].pop("MCP_OAUTH_REDIRECT_URIS")
     oauth["environment"].update(CLOUD_BOT_USERNAME="${CLOUD_BOT_USERNAME:?set bot username}",
                                 CLOUD_BOT_TOKEN_FILE="/run/secrets/bot_token", CLOUD_SLOTS=str(slot_count()))
+    oauth["environment"]["CLOUD_HUMAN_URL"] = "${CLOUD_HUMAN_URL:-}"
     oauth["secrets"].append("bot_token")
     oauth["volumes"] = ["community-oauth:/data/oauth"]
     oauth["networks"] = ["origin"]
@@ -30,7 +31,7 @@ def render(target, secret_dir):
                              "volumes": oauth["volumes"], "networks": ["origin"], "secrets": ["bot_token"],
                              "healthcheck": {"disable": True}, "environment": {
                                  **{k: oauth["environment"][k] for k in ("PUBLIC_BASE_URL", "OAUTH_DB_PATH", "CLOUD_SLOTS",
-                                                                       "CLOUD_BOT_USERNAME", "CLOUD_BOT_TOKEN_FILE")},
+                                                                       "CLOUD_BOT_USERNAME", "CLOUD_BOT_TOKEN_FILE", "CLOUD_HUMAN_URL")},
                                  "OWNER_TELEGRAM_ID": "${OWNER_TELEGRAM_ID:?set bot owner}"}}
     compose["secrets"] = {"cloud_routes": {"file": str(secret_dir / "community-routes.json")},
                           "bot_token": {"file": str(secret_dir / "bot-token")},

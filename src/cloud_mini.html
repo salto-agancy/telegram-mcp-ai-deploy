@@ -35,9 +35,10 @@ function storage(method, ...args) {
 }
 function closed() { button('Закрыть', () => app.close()).className = 'primary'; }
 function heading(text) { document.querySelector('#title').textContent = text; }
-function receipt(allowed) {
+function receipt(allowed, linked) {
   panel.replaceChildren();
-  heading(allowed ? 'Доступ разрешён' : 'Запрос отклонён');
+  heading(allowed ? 'Подтверждение принято' : 'Запрос отклонён');
+  if (allowed && !linked) show('p', 'Доступа к чатам пока нет.');
   show('p', 'Ответ сохранён. Вернитесь в окно, где начали подключение.');
   closed();
 }
@@ -54,7 +55,7 @@ async function api(action, value) {
       return;
     }
     messages.textContent = '';
-    if (typeof data.decision_recorded === 'boolean') return receipt(data.decision_recorded);
+    if (typeof data.decision_recorded === 'boolean') return receipt(data.decision_recorded, data.step === 'connected');
     render(data);
   } catch {
     messages.textContent = 'Ответ сервера не получен. Откройте исходное окно и проверьте состояние подключения.';
@@ -65,12 +66,7 @@ async function api(action, value) {
 }
 function render(data) {
   panel.replaceChildren();
-  if (data.step === 'login_closed') {
-    heading('Приглашение принято');
-    show('p', 'Ваше место в пилоте сохранено. Доступ к чатам ещё не подключён.');
-    show('p', 'Подключение новых аккаунтов сейчас приостановлено. Можно закрыть это окно.');
-    closed();
-  } else if (data.step === 'chats') {
+  if (data.step === 'chats') {
     heading('Выберите чаты');
     const filter = show('input', '', {type:'search', placeholder:'Поиск чатов', ariaLabel:'Поиск чатов'});
     const list = show('div', '');
@@ -83,13 +79,15 @@ function render(data) {
     filter.oninput = () => { for (const [row,,title] of inputs) row.hidden = !title.includes(filter.value.toLocaleLowerCase()); };
     show('p','Сообщения проходят через сервер владельца и выбранный вами ИИ-сервис. Переписки не сохраняются. Подключение на ваш риск. Отключить можно в любой момент');
     button('Разрешить чтение выбранных чатов', () => api('chats', inputs.filter(([,box])=>box.checked).map(([,box])=>box.value)));
-  } else if (data.step === 'connected') {
+  } else if (data.step === 'connected' || data.step === 'login_closed') {
+    const linked = data.step === 'connected';
     if (data.oauth) {
-      heading('Разрешить чтение?');
-      show('p', data.oauth.domain + ' запрашивает доступ к выбранным вами чатам.');
+      heading(linked ? 'Разрешить чтение?' : 'Подключить коннектор?');
+      show('p', data.oauth.domain + (linked ? ' запрашивает доступ к выбранным вами чатам.' :
+        ' сможет читать только те чаты, которые вы позже подключите и разрешите. Сейчас список пуст.'));
       show('p', 'Сверьте три цифры с исходным окном.');
       show('p', data.oauth.code, {className:'challenge'});
-      button('Разрешить', () => api('decision', true)).className = 'primary';
+      button(linked ? 'Разрешить' : 'Подключить', () => api('decision', true)).className = 'primary';
       button('Отклонить', () => api('decision', false));
       return;
     }
@@ -99,19 +97,21 @@ function render(data) {
       closed();
       return;
     }
-    heading('Telegram подключён');
+    heading(linked ? 'Telegram подключён' : 'Доступ к пилоту открыт');
+    if (!linked) show('p', 'Коннектор можно добавить в Perplexity уже сейчас. Чаты пока недоступны.');
     show('code', data.mcp_url);
     button('Скопировать', async () => {
       try { await navigator.clipboard.writeText(data.mcp_url); messages.textContent = 'URL скопирован.'; }
       catch { messages.textContent = 'Выделите адрес и скопируйте вручную.'; }
     });
-    button('Изменить чаты', () => api('edit'));
+    if (linked) button('Изменить чаты', () => api('edit'));
     for (const connection of data.connections ?? []) {
       const row = show('p', connection.name + ' ');
       show('button','Отключить',{onclick:()=>api('detach',connection.id)},row);
     }
-    button('Создать API-ключ', () => api('api_key'));
+    if (linked) button('Создать API-ключ', () => api('api_key'));
     if (data.key_sent) show('p', 'Ключ отправлен в личный чат с ботом.');
+    closed();
     button('Удалить всё', () => { if (confirm('Отключить Telegram и освободить место?')) api('delete'); });
   } else if (data.step === 'deleted') {
     storage('removeItem', 'cloud-unlock-v1').then(() => { proof=undefined; }).catch(() => {});

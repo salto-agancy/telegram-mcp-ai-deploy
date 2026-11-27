@@ -9,7 +9,7 @@ import re
 import secrets
 import time
 from pathlib import Path
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlsplit
 
 import httpx
 from cryptography.exceptions import InvalidTag
@@ -44,8 +44,12 @@ def telegram_identity(init_data, credential, now=None):
 
 
 class MiniApp:
-    def __init__(self, issuer, credential, slots, backends):
+    def __init__(self, issuer, credential, slots, backends, human_origin=None):
         self.issuer, self.credential, self.slots, self.backends = issuer, credential, slots, backends
+        self.human_origin = (human_origin or issuer).rstrip("/")
+        host = urlsplit(self.human_origin)
+        if host.scheme != "https" or not host.hostname or host.username is not None or self.human_origin != f"https://{host.netloc}":
+            raise ValueError("Expected a public HTTPS origin")
         self.locks = {index: asyncio.Lock() for index in backends}
         self.consent = self.manage = None
         self.notified = set()
@@ -99,7 +103,7 @@ class MiniApp:
         if action in {"phone", "code", "password"}:
             return JSONResponse({"error": "Этот способ входа отключён."}, status_code=410, headers=NO_STORE)
         try:
-            if request.headers.get("origin") != self.issuer:
+            if request.headers.get("origin") not in (self.issuer, self.human_origin):
                 raise ValueError
             if action == "session":
                 return self.open_launch(request)
@@ -138,7 +142,9 @@ class MiniApp:
                     db.execute("UPDATE cloud_slots SET user_id=NULL, wrapped=NULL WHERE user_id=?", (user,))
                     self.slots.clear_launches(db, user)
             self.notified.discard(user)
-        if result.get("step") == "connected" and self.manage:
+        if result.get("step") == "login_closed" and action == "api_key":
+            raise ValueError
+        if result.get("step") in {"connected", "login_closed"} and self.manage:
             if action == "api_key":
                 value = "tgcloud_" + secrets.token_urlsafe(32)
                 async with httpx.AsyncClient(timeout=5, trust_env=False) as client:

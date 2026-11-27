@@ -69,7 +69,7 @@ async def healthy(client):
 async def main():
     credential = _secret("CLOUD_BOT_TOKEN")
     owner = int(os.environ["OWNER_TELEGRAM_ID"])
-    username, issuer = os.environ["CLOUD_BOT_USERNAME"], os.environ["PUBLIC_BASE_URL"].rstrip("/")
+    username, issuer = os.environ["CLOUD_BOT_USERNAME"], (os.getenv("CLOUD_HUMAN_URL") or os.environ["PUBLIC_BASE_URL"]).rstrip("/")
     slots = Slots(os.environ["OAUTH_DB_PATH"], slot_count())
     offset, failed = 0, False
     async with httpx.AsyncClient(timeout=35, trust_env=False) as client:

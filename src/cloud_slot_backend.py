@@ -113,8 +113,12 @@ class SlotTelegram(TelegramChat):
 
     async def list_chats(self, key):
         async with self.lock:
+            if not self.encrypted.path.exists():
+                return []
             state = self.state(key)
             allowed = state["peers"]
+            if not allowed:
+                return []
 
             async def names(client):
                 return [{"chat_id": dialog.id, "title": dialog.name}
@@ -124,6 +128,8 @@ class SlotTelegram(TelegramChat):
 
     async def messages(self, key, chat_id, query, limit, cursor):
         async with self.lock:
+            if not self.encrypted.path.exists():
+                raise ToolError("Доступ к чатам ещё не настроен. Чтение сообщений закрыто.")
             state = self.state(key)
             encoded = state["peers"].get(str(chat_id))
             if encoded is None:
