@@ -35,12 +35,19 @@ class Consent:
 
     def waiting(self, rid, data):
         return HTMLResponse(
-            '<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width">'
+            '<!doctype html><html lang=ru><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">'
+            '<title>Подтверждение в Telegram</title>'
             f'<meta http-equiv=refresh content="2;url=/authorize/status/{rid}">'
-            f'<h1>{escape(data["domain"])}</h1><p>Код подтверждения <strong>{data["code"]}</strong></p>'
-            f'<a href="https://t.me/{escape(self.username)}?startapp={rid}">Подтвердить в Telegram</a>'
-            '<p>Сверьте домен и три цифры в Telegram. Затем вернитесь в это окно, чтобы завершить подключение.</p>',
-            headers={**NO_STORE, "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"},
+            '<style>:root{color-scheme:light dark}body{margin:0;padding:42px 20px;background:Canvas;color:CanvasText;'
+            'font:17px/1.45 system-ui}main{max-width:420px;margin:6vh auto}h1{font-size:32px;line-height:1.1}'
+            'strong{font:600 38px ui-monospace,monospace;letter-spacing:.15em}a{display:block;background:#1460cc;'
+            'color:white;border-radius:14px;padding:14px;text-align:center;text-decoration:none;font-weight:600}'
+            'p{overflow-wrap:anywhere}</style><main><h1>Подтвердить доступ</h1>'
+            f'<p>Приложение <b>{escape(data["domain"])}</b> запрашивает чтение выбранных чатов.</p>'
+            f'<p>Сверьте три цифры в Telegram<br><strong>{data["code"]}</strong></p>'
+            f'<a href="https://t.me/{escape(self.username)}?startapp={rid}">Открыть в Telegram</a>'
+            '<p>Затем вернитесь в это окно. Оно проверит ответ автоматически.</p></main></html>',
+            headers={**NO_STORE, "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'"},
         )
 
     @staticmethod
@@ -49,8 +56,14 @@ class Consent:
 
     def view(self, rid):
         data = self.requests.get(rid)
-        if data and "decision" not in data:
+        if data and "recorded_by" not in data:
             return {"domain": data["domain"], "code": data["code"]}
+        return None
+
+    def receipt(self, rid, user):
+        data = self.requests.get(rid)
+        if data and data.get("recorded_by") == user:
+            return data["allowed"]
         return None
 
     def decide(self, rid, slot, user, key, allowed):
@@ -58,16 +71,17 @@ class Consent:
         member = self.mini.slots.lookup(user)
         if not self.view(rid) or member is None or member["id"] != slot or type(allowed) is not bool:
             raise ValueError
+        data.update(recorded_by=user, allowed=allowed)
         data["decision"] = (slot, user, member["wrapped"], key) if allowed else None
 
     async def poll(self, request):
         rid = request.path_params["flow"]
         data = self.requests.get(rid)
-        if not data or not hmac.compare_digest(data["browser"], digest(request.cookies.get(self.cookie, ""))):
+        if not data or "browser" not in data or not hmac.compare_digest(data["browser"], digest(request.cookies.get(self.cookie, ""))):
             return self.error("Запрос недействителен. Начните подключение заново в том же окне.", 403)
         if "decision" not in data:
             return self.waiting(rid, data)
-        self.requests.pop(rid)
+        self.requests[rid] = {"recorded_by": data["recorded_by"], "allowed": data["allowed"]}
         params, decision = data["params"], data["decision"]
         if decision:
             slot, user, wrapped, key = decision

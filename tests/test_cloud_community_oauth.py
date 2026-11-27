@@ -100,6 +100,7 @@ def exchange(http, other, mini_call, client):
     assert result.status_code == 303
     code = parse_qs(urlsplit(result.headers["location"]).query)["code"][0]
     assert http.get(poll).status_code == 403
+    assert mini_call(http, "status", start=flow).json()["decision_recorded"] is True
     data = {**client, "grant_type": "authorization_code", "code": code, "code_verifier": verifier, "redirect_uri": CALLBACK}
     data["resource"] = params["resource"]
     assert http.post("/token", data={**data, "resource": ISSUER + "/mcp//"}).status_code == 400
@@ -140,6 +141,8 @@ def test_decline_returns_to_original_client(community):
         assert mini_call(http, "decision", False, flow).json()["decision_recorded"] is False
         result = http.get(f"/authorize/status/{flow}")
         assert result.status_code == 303
+        assert mini_call(http, "status", start=flow).json()["decision_recorded"] is False
+        assert http.get(f"/authorize/status/{flow}").status_code == 403
         location = urlsplit(result.headers["location"])
         assert parse_qs(location.query) == {"state": ["decline-test"], "error": ["access_denied"]}
 

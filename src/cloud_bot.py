@@ -51,8 +51,8 @@ async def message(bot, slots, owner, username, issuer, update):
                     else:
                         text = "Свободных мест пока нет. Попробуйте позже."
         if slot:
-            text = "Откройте приложение, чтобы настроить доступ к Telegram."
-            buttons = {"inline_keyboard": [[{"text": "Подключить Telegram", "web_app": {"url": issuer + "/app"}}]]}
+            text = "Ваше место в пилоте сохранено. Откройте Mini App, чтобы проверить доступ к чатам."
+            buttons = {"inline_keyboard": [[{"text": "Открыть Mini App", "web_app": {"url": issuer + "/app"}}]]}
     else:
         return
     await bot("sendMessage", {"chat_id": user, "text": text, **({"reply_markup": buttons} if buttons else {})})
