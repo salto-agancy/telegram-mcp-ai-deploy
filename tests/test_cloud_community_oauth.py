@@ -88,6 +88,20 @@ def oauth_request(client):
             "code_challenge": encode(hashlib.sha256(verifier.encode()).digest()), "code_challenge_method": "S256"}, verifier
 
 
+def test_human_origin_can_authorize_but_cannot_register(community, monkeypatch):
+    create_app, _, _ = community
+    monkeypatch.setenv("CLOUD_TRUSTED_PROXY_IP", "192.0.2.1")
+    monkeypatch.setenv("CLOUD_HUMAN_PROXY_IP", "192.0.2.2")
+    app = create_app(human_origin="https://login.example")
+    with TestClient(app, base_url="https://login.example", client=("192.0.2.2", 1234)) as http:
+        params, _ = oauth_request({"client_id": "https://www.perplexity.ai/.well-known/mcp-client.json"})
+        params["redirect_uri"] = "https://www.perplexity.ai/rest/connections/oauth_callback"
+        response = http.get("/authorize", params=params)
+        assert response.status_code == 200
+        assert "__Host-cloud-browser" in response.cookies
+        assert http.post("/register", json={}).status_code == 403
+
+
 def exchange(http, other, mini_call, client):
     params, verifier = oauth_request(client)
     params["resource"] = ISSUER + "/mcp/"

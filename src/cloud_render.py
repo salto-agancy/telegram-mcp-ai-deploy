@@ -22,6 +22,7 @@ def render(target, secret_dir):
     oauth["environment"].update(CLOUD_BOT_USERNAME="${CLOUD_BOT_USERNAME:?set bot username}",
                                 CLOUD_BOT_TOKEN_FILE="/run/secrets/bot_token", CLOUD_SLOTS=str(slot_count()))
     oauth["environment"]["CLOUD_HUMAN_URL"] = "${CLOUD_HUMAN_URL:-}"
+    oauth["environment"]["CLOUD_HUMAN_PROXY_IP"] = "${CLOUD_HUMAN_PROXY_IP:-}"
     oauth["secrets"].append("bot_token")
     oauth["volumes"] = ["community-oauth:/data/oauth"]
     oauth["networks"] = ["origin"]
