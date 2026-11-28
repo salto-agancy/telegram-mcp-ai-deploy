@@ -116,6 +116,36 @@ async def test_telegram_account_must_match(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_password_failure_and_expired_login_are_distinct(tmp_path, monkeypatch):
+    from starlette.requests import Request
+    from telethon.errors import PasswordHashInvalidError
+
+    from src.cloud_secure import encode
+
+    telegram = SlotTelegram(tmp_path / "session.aes", 1)
+    key = secrets.token_bytes(32)
+    expired = await telegram.configure(key, 123, "password", "unused")
+    assert expired["step"] == "phone"
+    assert "истекло" in expired["error"]
+
+    async def bad_password(*args):
+        raise PasswordHashInvalidError(request=None)
+
+    monkeypatch.setattr(telegram, "configure", bad_password)
+    body = json.dumps({"action": "password", "user_id": 123, "value": "fictional"}).encode()
+
+    async def receive():
+        return {"type": "http.request", "body": body}
+
+    request = Request({"type": "http", "method": "POST", "path": "/setup",
+                       "headers": [(b"x-cloud-session-key", encode(key).encode())]}, receive)
+    response = await telegram.configuration(request)
+    assert response.status_code == 400
+    assert "Telegram не принял пароль" in response.body.decode()
+    assert b"fictional" not in response.body
+
+
+@pytest.mark.asyncio
 async def test_delete_logs_out_and_erases_session(tmp_path, monkeypatch):
     telegram = SlotTelegram(tmp_path / "session.aes", 1)
     key = secrets.token_bytes(32)

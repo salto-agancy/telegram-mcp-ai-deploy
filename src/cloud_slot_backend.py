@@ -17,6 +17,7 @@ from starlette.routing import Route
 from telethon import utils
 from telethon.errors import (
     FloodWaitError,
+    PasswordHashInvalidError,
     RPCError,
     SessionPasswordNeededError,
     UnauthorizedError,
@@ -54,7 +55,13 @@ class SlotTelegram(TelegramChat):
                 return JSONResponse(await self.configure(key, user, action, value))
         except UnauthorizedError:
             return JSONResponse({"error": "Подключите Telegram заново."}, status_code=409)
-        except (ValueError, InvalidTag, OSError, RPCError):
+        except PasswordHashInvalidError:
+            return JSONResponse({"error": "Telegram не принял пароль двухэтапной проверки. Проверьте пароль и попробуйте снова."}, status_code=400)
+        except FloodWaitError:
+            return JSONResponse({"error": "Telegram временно ограничил попытки входа. Подождите и попробуйте позже."}, status_code=429)
+        except (OSError, RPCError):
+            return JSONResponse({"error": "Telegram временно недоступен. Попробуйте позже."}, status_code=502)
+        except (ValueError, InvalidTag):
             return JSONResponse({"error": "Проверьте введённые данные и повторите действие."}, status_code=400)
 
     async def configure(self, key, user, action, value):
@@ -98,6 +105,8 @@ class SlotTelegram(TelegramChat):
             pending = {"user": user, "client": self.client(), "phone": value, "step": "phone"}
             self.pending = pending
             asyncio.get_running_loop().call_later(300, self.expire, pending)
+        if not pending and action in {"code", "password"}:
+            return {"step": "phone", "error": "Время входа истекло. Откройте Mini App заново и запросите новый код."}
         if not pending or pending["step"] != action or action not in {"phone", "code", "password"}:
             raise ValueError
         return await self.sign_in(pending, action, value)
