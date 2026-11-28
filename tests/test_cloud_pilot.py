@@ -1,10 +1,12 @@
 import asyncio
 import base64
 import hashlib
+import hmac
 import json
 import os
 import re
 import secrets
+import shutil
 import socket
 import sqlite3
 import subprocess
@@ -634,3 +636,70 @@ def test_perplexity_public_client_without_dcr(backends, tmp_path):
                 == 200
             )
             assert rpc(http, access, "tools/list", {}).status_code == 401
+
+
+def test_perplexity_startapp_through_http_guard(tmp_path):
+    from src.cloud_slots import Slots
+
+    credential = secret()
+    db_path = tmp_path / "oauth.db"
+    routes = {"1": {"url": "http://cloud-slot-1:8000/v1/mcp", "bearer": secret()}}
+    env = {"PUBLIC_BASE_URL": ISSUER, "OAUTH_DB_PATH": str(db_path), "CLOUD_SLOTS": "1",
+           "CLOUD_BOT_USERNAME": "test_bot", "CLOUD_BOT_TOKEN": credential,
+           "CLOUD_ROUTES": json.dumps(routes), "CLOUD_TRUSTED_PROXY_IP": "", "CLOUD_HUMAN_PROXY_IP": ""}
+    with service("cloud_oauth", env, tmp_path / "statuses") as url, httpx.Client(base_url=url, trust_env=False) as http:
+        slots = Slots(db_path, 1)
+        with slots.db(write=True) as db:
+            assert slots.claim(db, 123) == 1
+        params = auth_request("https://www.perplexity.ai/.well-known/mcp-client.json", secret())
+        params["redirect_uri"] = "https://www.perplexity.ai/rest/connections/oauth_callback"
+        page = http.get("/authorize", params=params)
+        assert page.status_code == 200
+        flow = re.search(r"startapp=([A-Za-z0-9_-]+)", page.text)[1]
+        browser = page.cookies.get("__Host-cloud-browser")
+        assert browser
+        poll = http.get(f"/authorize/status/{flow}", headers={"cookie": f"__Host-cloud-browser={browser}"})
+        assert poll.status_code == 200
+        assert http.get(f"/authorize/status/{flow}").status_code == 403
+        app = http.get("/app", params={"tgWebAppStartParam": flow, "unrelated": "ignored"})
+        assert app.status_code == 200
+        assert "Подключить Telegram" in app.text and "show('input'" in app.text
+        if shutil.which("node"):
+            script = r"""
+const fs = require('fs'), vm = require('vm');
+const html = fs.readFileSync(0, 'utf8'), nodes = [];
+function element(tag) { return {tag, dataset:{}, children:[], append(...x){this.children.push(...x)},
+  replaceChildren(){this.children=[]}, textContent:'', value:''}; }
+const panel=element('main'), title=element('h1'), messages=element('p');
+const document={querySelector(s){return {'#panel':panel,'#title':title,'#messages':messages}[s]},
+  createElement(tag){const n=element(tag); nodes.push(n); return n}};
+const app={initData:'hash=fixture',ready(){},isVersionAtLeast(){return false},
+  CloudStorage:{getItem(key,cb){cb(null,'a'.repeat(64))}}};
+const context={window:{Telegram:{WebApp:app}},document,URLSearchParams,
+  sessionStorage:{getItem(){return null},setItem(){}},
+  fetch:async url=>({ok:true,json:async()=>url.endsWith('/session')?{nonce:'fixture'}:{step:'phone'}}),
+  setTimeout};
+vm.runInNewContext(html.split('<script>')[1].split('</script>')[0],context);
+setTimeout(()=>{if(title.textContent!=='Подключить Telegram'||!nodes.some(n=>n.tag==='input')) process.exit(1)},20);
+"""
+            subprocess.run(["node", "-e", script], input=app.text, text=True, check=True, timeout=10)
+        bad_app = http.post("/app?unexpected=value")
+        assert bad_app.status_code == 400 and "Не удалось открыть приложение" in bad_app.text  # noqa: RUF001
+        failure = http.post("/app")
+        assert failure.status_code == 405 and "Не удалось открыть приложение" in failure.text  # noqa: RUF001
+        assert failure.headers["content-type"].startswith("text/html")
+        assert http.post("/app", content=b"x" * 65537).status_code == 413
+        assert "Не удалось открыть приложение" in http.post("/app", content=b"x" * 65537).text  # noqa: RUF001
+        assert http.post("/app/api/session", headers={"origin": ISSUER, "x-telegram-init-data": "invalid"}).status_code == 403
+        fields = {"auth_date": str(int(time.time())), "user": '{"id":123}', "start_param": flow}
+        check = "\n".join(f"{k}={v}" for k, v in sorted(fields.items()))
+        secret_key = hmac.digest(b"WebAppData", credential.encode(), "sha256")
+        fields["hash"] = hmac.digest(secret_key, check.encode(), "sha256").hex()
+        launch = http.post("/app/api/session", headers={"origin": ISSUER,
+                           "x-telegram-init-data": str(httpx.QueryParams(fields))})
+        assert launch.status_code == 200 and launch.json()["nonce"]
+        for action in ("status", "phone", "code", "password", "chats", "decision"):
+            response = http.post(f"/app/api/{action}", headers={"origin": ISSUER, "x-cloud-nonce": "invalid"},
+                                 json={"proof": "0" * 64, "value": None})
+            assert response.status_code == 403
+        assert http.post("/token?client_secret=ignored").status_code == 400
